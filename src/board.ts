@@ -3,6 +3,12 @@ import { z } from "zod";
 import { Database, encode, type Transaction } from "./db.js";
 import { BoardError } from "./errors.js";
 import * as mutations from "./mutations.js";
+import { REQUEST_RETENTION_MS } from "./db.js";
+import type {
+  LedgerVerifier,
+  VerificationItem,
+} from "./verification/ledger.js";
+import { recordReports } from "./verification/reports.js";
 import { planRead } from "./plans.js";
 import {
   compactStatus,
@@ -72,11 +78,29 @@ function parseRequest<T>(schema: z.ZodType<T>, argumentsValue: unknown): T {
   }
 }
 
+export interface BoardOptions {
+  /** Runs the checks on reported work; without it the ledger records work as reported. */
+  readonly verifier?: LedgerVerifier;
+  /** How long idempotency receipts are kept. */
+  readonly requestRetentionMs?: number;
+}
+
+function withVerification<T extends object>(
+  result: T,
+  items: readonly VerificationItem[],
+): T | (T & { verification: VerificationItem[] }) {
+  return items.length === 0 ? result : { ...result, verification: [...items] };
+}
+
 export class Board {
   readonly database: Database;
+  readonly verifier: LedgerVerifier | undefined;
+  readonly #retentionMs: number;
 
-  constructor(databasePath: string) {
+  constructor(databasePath: string, options: BoardOptions = {}) {
     this.database = new Database(databasePath);
+    this.verifier = options.verifier;
+    this.#retentionMs = options.requestRetentionMs ?? REQUEST_RETENTION_MS;
   }
 
   call(
@@ -125,7 +149,11 @@ export class Board {
       }
       case "plan_publish": {
         const request = parseRequest(planPublishSchema, argumentsValue);
-        return this.mutate(
+        const before = await this.verifier?.planSnapshot(
+          this.database,
+          request.project_id,
+        );
+        const result = await this.mutate(
           tool,
           request,
           request.session_id,
@@ -137,10 +165,24 @@ export class Board {
               mutations.planPublish(tx, request),
             ),
         );
+        const items =
+          this.verifier === undefined
+            ? []
+            : await this.verifier.afterPlanChange(
+                this.database,
+                request.project_id,
+                before,
+                request,
+              );
+        return withVerification(result, items);
       }
       case "plan_edit": {
         const request = parseRequest(planEditSchema, argumentsValue);
-        return this.mutate(
+        const before = await this.verifier?.planSnapshot(
+          this.database,
+          request.project_id,
+        );
+        const result = await this.mutate(
           tool,
           request,
           request.session_id,
@@ -152,6 +194,16 @@ export class Board {
               mutations.planEdit(tx, request),
             ),
         );
+        const items =
+          this.verifier === undefined
+            ? []
+            : await this.verifier.afterPlanChange(
+                this.database,
+                request.project_id,
+                before,
+                request,
+              );
+        return withVerification(result, items);
       }
       case "plan_ack": {
         const request = parseRequest(planAckSchema, argumentsValue);
@@ -166,7 +218,7 @@ export class Board {
       }
       case "work_claim": {
         const request = parseRequest(workClaimSchema, argumentsValue);
-        return this.mutate(
+        const result = await this.mutate(
           tool,
           request,
           request.session_id,
@@ -178,20 +230,41 @@ export class Board {
               mutations.workClaim(tx, request),
             ),
         );
+        const items =
+          this.verifier === undefined
+            ? []
+            : await this.verifier.afterClaim(
+                this.database,
+                request.project_id,
+                result.work,
+              );
+        return withVerification(result, items);
       }
       case "work_update": {
         const request = parseRequest(workUpdateSchema, argumentsValue);
+        const plan = await this.verifier?.planWorkUpdate(
+          this.database,
+          request,
+          request.session_id,
+        );
         return this.mutate(
           tool,
           request,
           request.session_id,
           workUpdateResponseSchema,
-          (tx) =>
-            this.finish(
+          (tx) => {
+            const result = this.finish(
               tx,
               request.session_id,
-              mutations.workUpdate(tx, request),
-            ),
+              mutations.workUpdate(tx, request, plan?.holds),
+            );
+            recordReports(tx, request);
+            const items =
+              plan === undefined || this.verifier === undefined
+                ? []
+                : this.verifier.record(tx, plan.pending);
+            return withVerification(result, items);
+          },
         );
       }
       case "plan_read": {
@@ -239,6 +312,11 @@ export class Board {
         return responseSchema.parse(cached.response);
       }
       const result = operation(tx);
+      tx.pruneRequests(
+        new Date(Date.now() - this.#retentionMs)
+          .toISOString()
+          .replace(/\.(\d{3})Z$/, ".$1000+00:00"),
+      );
       tx.putRequest(
         actorKey,
         request.request_id,

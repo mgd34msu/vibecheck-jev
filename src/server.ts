@@ -27,10 +27,10 @@ export function createServer(
   projects?: ReadonlySet<string>,
 ): McpServer {
   const server = new McpServer(
-    { name: "project-board", version },
+    { name: "vibecheck-jev", version },
     {
       instructions:
-        "Passive project ledger. Use project_join to establish a session, then project_status for compact current work. The coordinator publishes or edits the shared plan. Use plan_read for a plan revision or revision comparison and plan_ack to record the revision you observed. Claim and update work explicitly. Request full=true for complete current status, or include_map=true for the task map. This server never executes or schedules work.",
+        "Project work ledger whose reports are checked. Use project_join to establish a session, then project_status for compact current work; it leads with an attention list and shows each task as reported and as verified. The coordinator publishes or edits the shared plan, and can record each task's goal, acceptance criteria, rules and accepted exceptions, plus the project's rules and authorizations. Use plan_read for a plan revision or revision comparison and plan_ack to record the revision you observed. Claim and update work explicitly, with a report when you mark work complete, blocked or released: a done report that fails its check leaves the task open with the reason. Request full=true for complete current status, or include_map=true for the task map. This server never executes or schedules work.",
     },
   );
   async function invoke(
@@ -51,6 +51,10 @@ export function createServer(
         isError: false,
       };
     } catch (error) {
+      if (!(error instanceof BoardError))
+        process.stderr.write(
+          `vibecheck-jev: tool call failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+        );
       const result = {
         error:
           error instanceof BoardError
@@ -224,7 +228,7 @@ export function bearerGate(
 ): (request: IncomingMessage, response: ServerResponse) => boolean {
   if (!token || /\s/u.test(token))
     throw new Error(
-      "PROJECT_BOARD_TOKEN must be nonempty and contain no whitespace.",
+      "VIBECHECK_JEV_TOKEN must be nonempty and contain no whitespace.",
     );
   const expected = Buffer.from(token);
   return (request, response) => {

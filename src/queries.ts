@@ -31,6 +31,14 @@ import {
   type WorkRecord,
 } from "./schemas.js";
 import type { SqlValue } from "./sqlite.js";
+import { planDetails } from "./details.js";
+import { projectPolicySchema } from "./schemas.js";
+import {
+  attentionItemSchema,
+  taskVerificationSchema,
+  verificationView,
+} from "./verification/status.js";
+import { entrySchema, queryEntries, type Entry } from "./verification/store.js";
 
 export const STATUS_BUDGET = 65_536;
 
@@ -107,6 +115,7 @@ const inclusionCountSchema = z.strictObject({
   included: z.number().int().nonnegative(),
 });
 export const compactStatusResponseSchema = z.strictObject({
+  attention: z.array(attentionItemSchema).optional(),
   project_id: projectIdSchema,
   coordinator_session_id: sessionIdSchema,
   plan_revision: planRevisionSchema,
@@ -134,7 +143,9 @@ export const compactStatusResponseSchema = z.strictObject({
   map_changed: z.boolean().optional(),
   map_omitted: z.literal(true).optional(),
   task_map: taskMapSchema.optional(),
+  policy: projectPolicySchema.optional(),
   repository: z.string().optional(),
+  verification: z.record(z.string(), taskVerificationSchema).optional(),
 });
 export type CompactStatusResponse = z.infer<typeof compactStatusResponseSchema>;
 export interface ChangeBatch {
@@ -158,7 +169,9 @@ export interface WorkHistoryResponse {
   cursor: Cursor;
   has_more: boolean;
   changes: ChangeBatch[];
+  verifications?: Entry[];
 }
+export { entrySchema };
 
 const workRowSchema = z
   .object({ body: z.string() })
@@ -660,12 +673,14 @@ export function compactStatus(
     size += pathExtra;
     pathIncluded = true;
   }
+  const details = planDetails(tx);
   if (mapRequested) {
-    const mapping = taskMap(tasks.values());
+    const mapping = taskMap(tasks.values(), details.tasks);
     const extra = jsonSize("task_map") + 1 + jsonSize(mapping) + 1;
     if (budget === null || size + extra <= budget) {
       response.task_map = mapping;
       delete response.map_omitted;
+      if (details.policy !== undefined) response.policy = details.policy;
     }
   }
   response.counts.included = Object.keys(response.tasks).length;
@@ -677,7 +692,14 @@ export function compactStatus(
     !pathIncluded ||
     Boolean(response.map_omitted);
   if (!response.limited) delete response.full_hint;
-  return response;
+  const view = verificationView(tx, tasks);
+  const verified = Object.fromEntries(
+    [...view.tasks].filter(([id]) => Object.hasOwn(response.tasks, id)),
+  );
+  if (Object.keys(verified).length > 0) response.verification = verified;
+  return view.attention.length === 0
+    ? response
+    : { attention: view.attention, ...response };
 }
 
 export function projectStatus(
@@ -784,7 +806,7 @@ export function workHistory(
   }
   if (request.commit != null) {
     conditions.push(
-      "(json_extract(document, '$.commit') = ? OR json_extract(document, '$.integration_commit') = ? OR json_extract(document, '$.location.base_commit') = ?)",
+      "(lower(json_extract(document, '$.commit')) = ? OR lower(json_extract(document, '$.integration_commit')) = ? OR lower(json_extract(document, '$.location.base_commit')) = ?)",
     );
     values.push(request.commit, request.commit, request.commit);
   }
@@ -832,6 +854,14 @@ export function workHistory(
   );
   const sessionIds = new Set(work.map((record) => record.session_id));
   for (const batch of changes) sessionIds.add(batch.actor_id);
+  const verifications =
+    pageIds.size === 0
+      ? []
+      : queryEntries(tx, {
+          projectId: tx.projectId,
+          workIds: [...pageIds],
+          limit: 500,
+        });
   return {
     project_id: tx.projectId,
     work,
@@ -840,5 +870,6 @@ export function workHistory(
     cursor: changes.at(-1)?.seq ?? after,
     has_more: batches.length > limit,
     changes,
+    ...(verifications.length === 0 ? {} : { verifications }),
   };
 }

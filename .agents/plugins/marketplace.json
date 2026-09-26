@@ -1,11 +1,11 @@
 {
-  "name": "vibecheck",
+  "name": "vibecheck-jev",
   "interface": {
-    "displayName": "Vibecheck"
+    "displayName": "Vibecheck Jev"
   },
   "plugins": [
     {
-      "name": "vibecheck",
+      "name": "vibecheck-jev",
       "source": {
         "source": "local",
         "path": "./"

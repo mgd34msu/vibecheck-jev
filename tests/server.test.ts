@@ -1,6 +1,7 @@
 import { version } from "../src/version.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
 import {
   createServer as createHttpServer,
@@ -29,6 +30,9 @@ const errorSchema = z.object({
 });
 const joinResultSchema = z.object({ session_id: z.string() });
 const objectSchema = z.record(z.string(), z.unknown());
+const configHome = mkdtempSync(join(tmpdir(), "vibecheck-jev-test-config-"));
+process.on("exit", () => rmSync(configHome, { recursive: true, force: true }));
+
 const cliPath = fileURLToPath(
   new URL(
     import.meta.url.endsWith(".ts") ? "../src/cli.ts" : "../src/cli.js",
@@ -360,13 +364,13 @@ test("unexpected backend errors are sanitized", async (t) => {
 
 test("CLI defaults and environment match the database and project contract", () => {
   const options = parseArgs([], { XDG_DATA_HOME: "/tmp/data" });
-  assert.equal(options.database, "/tmp/data/project-board/board.sqlite3");
+  assert.equal(options.database, "/tmp/data/vibecheck-jev/ledger.sqlite3");
   assert.equal(options.transport, "stdio");
   assert.equal(options.host, "127.0.0.1");
   assert.equal(options.port, 8765);
   assert.equal(options.projects, undefined);
   assert.equal(
-    defaultDatabase({ PROJECT_BOARD_DB: "/tmp/override.db" }),
+    defaultDatabase({ VIBECHECK_JEV_DB: "/tmp/override.db" }),
     "/tmp/override.db",
   );
   const configured = parseArgs(
@@ -383,9 +387,9 @@ test("CLI defaults and environment match the database and project contract", () 
       "other:*",
     ],
     {
-      PROJECT_BOARD_DB: "/tmp/environment.db",
-      PROJECT_BOARD_PROJECTS: "alpha, beta",
-      PROJECT_BOARD_TOKEN: "secret",
+      VIBECHECK_JEV_DB: "/tmp/environment.db",
+      VIBECHECK_JEV_PROJECTS: "alpha, beta",
+      VIBECHECK_JEV_TOKEN: "secret",
     },
   );
   assert.equal(configured.database, "/tmp/cli.db");
@@ -405,13 +409,13 @@ test("CLI defaults and environment match the database and project contract", () 
   }
   for (const projects of ["", " ", "alpha,", "bad project"])
     assert.throws(
-      () => parseArgs([], { PROJECT_BOARD_PROJECTS: projects }),
+      () => parseArgs([], { VIBECHECK_JEV_PROJECTS: projects }),
       CliUsageError,
     );
   assert.throws(
     () =>
       parseArgs(["--transport", "streamable-http"], {
-        PROJECT_BOARD_TOKEN: "sensitive secret",
+        VIBECHECK_JEV_TOKEN: "sensitive secret",
       }),
     (error: unknown) =>
       error instanceof CliUsageError &&
@@ -425,7 +429,7 @@ test("real stdio CLI serves MCP and preserves the allowlist", async (t) => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [cliPath, "--database", path],
-    env: { PROJECT_BOARD_PROJECTS: "allowed" },
+    env: { VIBECHECK_JEV_PROJECTS: "allowed", XDG_CONFIG_HOME: configHome },
     stderr: "pipe",
   });
   t.after(() => client.close());
@@ -457,7 +461,7 @@ function runCli(
   return new Promise<{ code: number | null; stdout: string; stderr: string }>(
     (resolve, reject) => {
       const child = spawn(process.execPath, [entryPath, ...arguments_], {
-        env: environment,
+        env: { XDG_CONFIG_HOME: configHome, ...environment },
         stdio: ["pipe", "pipe", "pipe"],
       });
       let stdout = "";
@@ -479,11 +483,11 @@ test("CLI version, bad configuration, and stdin EOF terminate cleanly", async (t
   const { path } = await temporaryBoard(t);
   assert.deepEqual(await runCli(["--version"]), {
     code: 0,
-    stdout: `vibecheck ${version}\n`,
+    stdout: `vibecheck-jev ${version}\n`,
     stderr: "",
   });
   const invalid = await runCli(["--transport", "streamable-http"], {
-    PROJECT_BOARD_TOKEN: "sensitive secret",
+    VIBECHECK_JEV_TOKEN: "sensitive secret",
   });
   assert.equal(invalid.code, 2);
   assert.equal(invalid.stdout, "");
@@ -517,8 +521,9 @@ test("HTTP CLI starts authenticated service and closes on SIGTERM", async (t) =>
     ],
     {
       env: {
-        PROJECT_BOARD_TOKEN: "test-secret",
-        PROJECT_BOARD_PROJECTS: "allowed",
+        VIBECHECK_JEV_TOKEN: "test-secret",
+        VIBECHECK_JEV_PROJECTS: "allowed",
+        XDG_CONFIG_HOME: configHome,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -592,11 +597,11 @@ test("HTTP CLI starts authenticated service and closes on SIGTERM", async (t) =>
 
 test("installed command symlinks run the CLI entry point", async (t) => {
   const { directory } = await temporaryBoard(t);
-  const executable = join(directory, "vibecheck");
+  const executable = join(directory, "vibecheck-jev");
   await symlink(cliPath, executable);
   assert.deepEqual(await runCli(["--version"], {}, executable), {
     code: 0,
-    stdout: `vibecheck ${version}\n`,
+    stdout: `vibecheck-jev ${version}\n`,
     stderr: "",
   });
 });

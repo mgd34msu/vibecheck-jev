@@ -1,15 +1,15 @@
 {
-  "name": "@mgd34msu/vibecheck",
-  "version": "1.0.2",
-  "description": "A compact MCP ledger for agent work, dependencies, sessions, and Git provenance.",
+  "name": "@mgd34msu/vibecheck-jev",
+  "version": "1.0.0",
+  "description": "A work ledger for Claude Code and Codex agents whose reports are checked by a Jev-compatible judgment model.",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24",
     "bun": ">=1.3.14"
   },
   "bin": {
-    "vibecheck": "dist/cli.js",
-    "project-board": "dist/cli.js"
+    "vibecheck-jev": "dist/cli.js"
   },
   "exports": {
     ".": {
@@ -20,7 +20,8 @@
   "files": [
     "dist",
     "README.md",
-    "docs/protocol.md"
+    "docs/protocol.md",
+    "LICENSE"
   ],
   "author": {
     "name": "Mike Davis",
@@ -28,9 +29,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mgd34msu/vibecheck.git"
+    "url": "git+https://github.com/mgd34msu/vibecheck-jev.git"
   },
-  "homepage": "https://github.com/mgd34msu/vibecheck",
+  "homepage": "https://github.com/mgd34msu/vibecheck-jev",
+  "bugs": {
+    "url": "https://github.com/mgd34msu/vibecheck-jev/issues"
+  },
   "scripts": {
     "start": "bun src/cli.ts",
     "build": "node node_modules/typescript/bin/tsc -p tsconfig.build.json",
@@ -47,8 +51,9 @@
     "verify": "bun run format:check && bun run typecheck && bun run check:types && bun run check:bundle && bun run test:bun && bun run test:node && bun run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@typesafe-ai/sdk": "0.6.0",
     "zod": "4.5.4"
   },
   "devDependencies": {

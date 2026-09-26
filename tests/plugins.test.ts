@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import {
+  LAUNCHER,
   packageVersion,
   platforms,
   pluginFiles,
@@ -28,7 +29,7 @@ for (const platform of platforms) {
       { timeout: 40_000 },
       async (context) => {
         const temporary = await mkdtemp(
-          join(tmpdir(), "vibecheck plugin test "),
+          join(tmpdir(), "vibecheck-jev plugin test "),
         );
         const plugin = join(temporary, "read only plugin");
         const directories = new Set<string>([plugin]);
@@ -43,7 +44,7 @@ for (const platform of platforms) {
           const target = join(plugin, file);
           await mkdir(dirname(target), { recursive: true });
           await cp(join(checkout, file), target);
-          await chmod(target, file === "scripts/run-server.sh" ? 0o555 : 0o444);
+          await chmod(target, file === LAUNCHER ? 0o555 : 0o444);
           let directory = dirname(target);
           while (directory.startsWith(`${plugin}/`)) {
             directories.add(directory);
@@ -57,16 +58,16 @@ for (const platform of platforms) {
         const version = await packageVersion(checkout);
         const launched = spawnSync(
           "bash",
-          [join(plugin, "scripts/run-server.sh"), "--version"],
+          [join(plugin, LAUNCHER), "--version"],
           {
             cwd: temporary,
             encoding: "utf8",
-            env: { ...process.env, VIBECHECK_RUNTIME: runtime },
+            env: { ...process.env, VIBECHECK_JEV_RUNTIME: runtime },
             timeout: 10_000,
           },
         );
         assert.equal(launched.status, 0, launched.stderr);
-        assert.equal(launched.stdout, `vibecheck ${version}\n`);
+        assert.equal(launched.stdout, `vibecheck-jev ${version}\n`);
         await exercisePlugin(
           plugin,
           platform,
@@ -81,15 +82,11 @@ for (const platform of platforms) {
 }
 
 test("launcher rejects an invalid runtime override without starting the server", () => {
-  const result = spawnSync(
-    "bash",
-    [join(checkout, "scripts/run-server.sh"), "--version"],
-    {
-      encoding: "utf8",
-      env: { ...process.env, VIBECHECK_RUNTIME: "missing" },
-      timeout: 10_000,
-    },
-  );
+  const result = spawnSync("bash", [join(checkout, LAUNCHER), "--version"], {
+    encoding: "utf8",
+    env: { ...process.env, VIBECHECK_JEV_RUNTIME: "missing" },
+    timeout: 10_000,
+  });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /must be auto, bun, or node/u);
   assert.equal(result.stdout, "");

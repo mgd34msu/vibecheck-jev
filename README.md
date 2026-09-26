@@ -1,333 +1,407 @@
-# Vibecheck
+# vibecheck-jev
 
-Vibecheck is a passive MCP work ledger for coding agents. It records a shared task plan, session ancestry, claims, work locations, blockers, and commits in SQLite. Agents report changes through nine tools. The board does not run agents, schedule work, execute Git commands, or verify that reported work happened.
+vibecheck-jev is a work ledger for Claude Code and Codex agents whose reports are checked. Agents record the plan, their claims, progress, blockers and handoffs through nine MCP tools, as in any shared ledger. A Jev-compatible judgment model then reads what they report against what was asked: a "done" report against the task's goal and acceptance criteria, a blocker against the reasons the project accepts, a plan change against the work it replaces. Project status shows every task as reported and as verified, and leads with what needs attention.
 
-This repository contains the TypeScript implementation, version 1.0.2. The Python implementation is archived separately at [mgd34msu/vibecheck-python](https://github.com/mgd34msu/vibecheck-python).
+The plugin also installs hooks that check the agent's own turns: briefs it sends to subagents, shell deletes it runs, and the reply it stops on.
 
-## Install the plugin
+It builds on the [vibecheck](https://github.com/mgd34msu/vibecheck) ledger and opens an existing vibecheck database unchanged.
 
-Use a Codex or Claude Code client with native plugin support. Install Bash and either Bun 1.3.14 or later or Node.js 24 or later. The launcher supports Linux, macOS, and Windows through WSL. No Python installation is required.
+## Contents
 
-For Codex, install the tagged marketplace:
+- [Install](#install)
+- [Choose a judgment source](#choose-a-judgment-source)
+- [The config file](#the-config-file)
+- [What each check does](#what-each-check-does)
+- [Record the standard the checks read](#record-the-standard-the-checks-read)
+- [Read verified status](#read-verified-status)
+- [Calibrate](#calibrate)
+- [Run Laya locally](#run-laya-locally)
+- [Run Jev-Style locally](#run-jev-style-locally)
+- [Commands](#commands)
+- [Data and the database](#data-and-the-database)
+- [Share a ledger over HTTP](#share-a-ledger-over-http)
+- [Tools](#tools)
+- [Build from source](#build-from-source)
 
-```bash
-codex plugin marketplace add mgd34msu/vibecheck --ref v1.0.2
-codex plugin add vibecheck@vibecheck
-```
+## Install
+
+You need Bash and either Bun 1.3.14 or later or Node.js 24 or later. The launcher picks Bun when it is installed, then Node.js. Linux and macOS work directly; on Windows, use WSL.
 
 For Claude Code:
 
 ```bash
-claude plugin marketplace add mgd34msu/vibecheck@v1.0.2
-claude plugin install vibecheck@vibecheck
+claude plugin marketplace add mgd34msu/vibecheck-jev@v1.0.0
+claude plugin install vibecheck-jev@vibecheck-jev
 ```
 
-These commands select the v1.0.2 Git tag. Enable the plugin in your client and reload the session if the tools do not appear. The plugin registers its MCP server and supplies a shared [vibecheck skill](skills/vibecheck/SKILL.md). There are no startup hooks that register projects or force the skill to run on every first turn.
-
-Ask the agent to use Vibecheck to report its current work or recover an earlier plan. Supply a stable project ID and repository identity. For a standing project policy, copy [the agent instructions](docs/agent-usage.md) into your project's `AGENTS.md`.
-
-Both native plugins include the same compiled `runtime/vibecheck.mjs` bundle and skill. The launcher selects Bun when available, then Node.js. Set `VIBECHECK_RUNTIME=bun` or `VIBECHECK_RUNTIME=node` to select one explicitly. Plugin startup does not install dependencies or write inside the plugin directory.
-
-The bundle includes its dependency license notices in `runtime/THIRD-PARTY-NOTICES.txt`.
-
-Both native plugins use the same server and skill. Their local stdio processes share the default database, so using both clients on one machine does not create separate boards.
-
-## Build release assets
-
-From a source checkout with locked dependencies installed, run:
+For Codex:
 
 ```bash
-bun run build:release
-bun run verify:release
+codex plugin marketplace add mgd34msu/vibecheck-jev --ref v1.0.0
+codex plugin add vibecheck-jev@vibecheck-jev
 ```
 
-The build requires Bun, `zip`, and `tar`. It refreshes the bundled runtime and writes these files in `artifacts/`:
+Reload the session after installing. The plugin registers the `vibecheck-jev` MCP server, a skill that teaches agents to use the ledger and read verification, and three hooks. Codex asks you to review and trust plugin hooks before they run. Plugin startup installs nothing and writes nothing inside the plugin folder.
 
-- `vibecheck-codex-plugin-1.0.2.zip`, the Codex plugin bundle.
-- `vibecheck-claude-plugin-1.0.2.zip`, the Claude plugin bundle.
-- `vibecheck-runtime-1.0.2.tar.gz`, the standalone bundled runtime.
-- `SHA256SUMS`, checksums for the release artifacts.
+Both clients use the same config file and the same ledger database, so an agent in Claude Code and an agent in Codex on the same machine share one ledger.
 
-Verify downloaded artifacts against `SHA256SUMS` with your platform's SHA-256 utility. Each plugin archive extracts into a `vibecheck` directory with its native manifest and marketplace catalog. For an extracted Codex archive, register that directory and install:
+To tell your agents how to use the ledger in a project, add the block in [docs/agent-usage.md](docs/agent-usage.md) to the instructions file they read (for example `AGENTS.md` or `CLAUDE.md`).
+
+## Choose a judgment source
+
+Every check needs a judgment source: a model that answers the System One wire API (`POST /v1/systemone`) that TypeSafe's Jev defined. vibecheck-jev works with four kinds:
+
+- **An open Jev-compatible server** you run yourself, such as an OpenJev server.
+- **Laya**, an open-source Jev-compatible model, served locally by `vibecheck-jev laya serve`.
+- **Jev-Style**, an open decision model, served by the optional adapter in `adapters/jev-style`.
+- **Hosted Jev** from TypeSafe, which needs an API key.
+
+With no configuration, vibecheck-jev uses hosted Jev with the key in `TYPESAFE_API_KEY`. Without any usable source, nothing breaks: the ledger records work as reported, like a plain ledger, and the hooks let work go ahead and print why on stderr.
+
+### A local open Jev server
+
+Add the server to `sources` in the config file (see [the config file](#the-config-file) for where it lives):
+
+```jsonc
+"sources": [
+  { "kind": "openjev", "id": "local-jev", "baseURL": "http://127.0.0.1:8000", "model": "jev" }
+]
+```
+
+Then confirm it answers, and see how its readings sit against the checks' fixtures:
 
 ```bash
-codex plugin marketplace add /absolute/path/to/vibecheck
-codex plugin add vibecheck@vibecheck
+vibecheck-jev sources --source local-jev
+vibecheck-jev measure fixtures --source local-jev --runs 3
 ```
 
-For an extracted Claude archive:
+`sources` sends one small reading, reports the answer time and model, and lists the server's models when it supports that. `measure fixtures` runs every check's example cases on that source and ends with the list of fixtures that fail there, if any. A fixture that fails on your source is a check whose thresholds you may want to adjust for that source (see [calibrate](#calibrate)).
+
+### Hosted Jev
+
+Set your key in the environment the client starts from:
 
 ```bash
-claude plugin marketplace add /absolute/path/to/vibecheck
-claude plugin install vibecheck@vibecheck
+export TYPESAFE_API_KEY="your key"
 ```
 
-Choose either the GitHub marketplace or the extracted local marketplace for a client. Keep a local marketplace directory available for subsequent plugin management. See [release notes](docs/releases/v1.0.2.md) for publication status.
+or name another variable in the config with `"auth": { "apiKeyEnv": "MY_KEY_VARIABLE" }`. Check it with `vibecheck-jev sources --source typesafe`.
 
-## Run from source
+### Several sources
 
-Install Bun 1.3.14 or later, then run:
+List sources in the order they should be tried. When a source is unreachable, rate limited or times out, the next one answers the same reading, and the verdict records which source answered and which were skipped. An authentication failure or a rejected request stops there instead of moving on, since the next source would hide a misconfiguration. A reading larger than a source's input limits skips that source, and the skip is recorded.
+
+## The config file
+
+The config file is `$XDG_CONFIG_HOME/vibecheck-jev/config.jsonc`, or `~/.config/vibecheck-jev/config.jsonc` when `XDG_CONFIG_HOME` is unset. Set `VIBECHECK_JEV_CONFIG` to use another path. `vibecheck-jev config path` prints the path in use.
+
+The file is created on the first run of the MCP server, a hook or any command, with every option present at its default and a comment above each one. It is never overwritten. `vibecheck-jev config init --force` rewrites it from the template after saving the old file next to it with a `.bak` suffix, and `vibecheck-jev config check` validates it. The format is JSON with `//` and `/* */` comments and trailing commas allowed.
+
+If the file has an error, the message names the file, the key and what was expected, for example:
+
+```
+/home/you/.config/vibecheck-jev/config.jsonc: checks.vibecheck.deferral.thresholds.blockAt: expected a probability from 0 to 1
+```
+
+With a broken config, the hooks let work go ahead and print that message, and the MCP server runs with ledger checks off until it is fixed.
+
+The file has five top-level keys.
+
+| Key       | Type                         | Default                                   | What it controls                                 |
+| --------- | ---------------------------- | ----------------------------------------- | ------------------------------------------------ |
+| `sources` | array of sources             | hosted Jev only                           | Judgment sources, tried in order                 |
+| `checks`  | object, check id to settings | every check on at its built-in thresholds | Each check's switch, thresholds and routing      |
+| `ledger`  | object                       | `{ "verify": true }`                      | Whether the ledger checks what is reported to it |
+| `hooks`   | object                       | every hook on, 40-second deadlines        | The three hooks                                  |
+| `data`    | object                       | `null` folder and database                | Where the ledger lives                           |
+
+### sources
+
+Each source has a `kind`, an `id` you choose (used in routing and per-source thresholds), and the fields for its kind.
+
+| Field                    | Kinds             | Type                                  | Default                                                      | Meaning                                                                                                                        |
+| ------------------------ | ----------------- | ------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `kind`                   | all               | `"typesafe"`, `"openjev"` or `"laya"` | required                                                     | Which kind of source                                                                                                           |
+| `id`                     | all               | letters, digits, `.`, `_`, `-`        | required                                                     | Unique name for the source                                                                                                     |
+| `baseURL`                | typesafe, openjev | URL                                   | `https://api.typesafe.ai` for typesafe; required for openjev | Server root; the client posts to `/v1/systemone`                                                                               |
+| `model`                  | all               | text                                  | `jev-latest` (typesafe), required (openjev), `laya` (laya)   | Model name sent with each reading                                                                                              |
+| `auth.apiKey`            | typesafe, openjev | text                                  | none                                                         | Key sent as a bearer token. Prefer `apiKeyEnv` so keys stay out of the file                                                    |
+| `auth.apiKeyEnv`         | typesafe, openjev | variable name                         | `TYPESAFE_API_KEY` for typesafe                              | Environment variable holding the key                                                                                           |
+| `auth.headers`           | typesafe, openjev | object of text                        | none                                                         | Extra request headers, for servers that authenticate another way                                                               |
+| `timeoutMs`              | all               | positive integer                      | 25000; 60000 for laya                                        | How long one attempt may take before the next source is tried                                                                  |
+| `limits.maxStateTokens`  | all               | positive integer                      | none; 512 for laya                                           | Readings with a larger state skip this source                                                                                  |
+| `limits.maxOptionTokens` | all               | positive integer                      | none; 192 for laya                                           | Readings with a longer choice option skip this source                                                                          |
+| `limits.maxOptions`      | all               | positive integer                      | none; 20 for laya                                            | Readings with more choice options skip this source                                                                             |
+| `host`, `port`           | laya              | text, 1 to 65535                      | `127.0.0.1`, `8723`                                          | Where `laya serve` listens                                                                                                     |
+| `autostart`              | laya              | boolean                               | `false`                                                      | Start `laya serve` in the background when a hook or the ledger finds it not running                                            |
+| `load`                   | laya              | object                                | none                                                         | Laya load options: `modelDir`, `repo`, `subfolder`, `revision`, `cacheDir`, `token`, `executionProviders`, `intraOpNumThreads` |
+
+Token counts for limits are estimated at three characters per token, which errs toward skipping.
+
+Example with a local server first and hosted Jev as the fallback:
+
+```jsonc
+"sources": [
+  { "kind": "openjev", "id": "local-jev", "baseURL": "http://127.0.0.1:8000", "model": "jev" },
+  { "kind": "typesafe", "id": "typesafe" }
+]
+```
+
+### checks
+
+`checks` maps a check id to its settings. Every check is listed in the generated file.
+
+| Field              | Type                               | Default                     | Meaning                                                                                            |
+| ------------------ | ---------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------- |
+| `enabled`          | boolean                            | `true`                      | `false` turns the check off everywhere: the ledger and the hooks skip it and record nothing for it |
+| `thresholds`       | object, name to number from 0 to 1 | the check's built-in values | Replaces the named thresholds for every source                                                     |
+| `sources`          | array of source ids, or `null`     | `null`                      | The sources that answer this check, in order. `null` means every source in the `sources` order     |
+| `sourceThresholds` | object, source id to thresholds    | none                        | Threshold values that apply only when that source answers, over `thresholds`                       |
+
+Example: send the short checks to Laya and the evidence-heavy ones to hosted Jev, turn off the stall check, and make claims-done stricter only on Laya:
+
+```jsonc
+"checks": {
+  "vibecheck.question-answered": { "sources": ["laya", "typesafe"] },
+  "vibecheck.claim-grounded": { "sources": ["typesafe"] },
+  "vibecheck.stalled": { "enabled": false },
+  "vibecheck.claims-done": { "sourceThresholds": { "laya": { "blockAt": 0.5 } } }
+}
+```
+
+Every threshold is a probability between 0 and 1. Each check compares a model reading against its thresholds. For a threshold that a reading must reach to block or flag (most are named `blockAt` or `flagAt`), raising it makes the check stricter about when to act, so it blocks less; lowering it makes it act on weaker readings, so it blocks more. The table in [what each check does](#what-each-check-does) says which direction each threshold moves.
+
+For example, `"vibecheck.deferral": { "thresholds": { "blockAt": 0.75 } }` stops the Stop hook from blocking replies that only lean toward putting work off; only replies the model reads as clearly deferring (0.75 or more) are sent back.
+
+### ledger
+
+| Field    | Type    | Default | Meaning                                                                                                    |
+| -------- | ------- | ------- | ---------------------------------------------------------------------------------------------------------- |
+| `verify` | boolean | `true`  | `false` makes the ledger record work as reported, with no readings and no verification fields in responses |
+
+### hooks
+
+| Field               | Type              | Default | Meaning                                                                               |
+| ------------------- | ----------------- | ------- | ------------------------------------------------------------------------------------- |
+| `briefCheck`        | boolean           | `true`  | The brief check on subagent launches and messages                                     |
+| `bashGuard`         | boolean           | `true`  | The delete guard on shell commands                                                    |
+| `stop`              | boolean           | `true`  | The Stop checks on the agent's final reply                                            |
+| `briefCheckSeconds` | number, up to 600 | `40`    | How long the brief check waits for its readings before letting the tool call go ahead |
+| `stopSeconds`       | number, up to 600 | `40`    | How long the Stop checks wait before letting the turn end                             |
+
+The clients stop a hook at 45 seconds (10 for the delete guard), so keep the deadlines below that.
+
+### data
+
+| Field      | Type           | Default                                                                   | Meaning                                              |
+| ---------- | -------------- | ------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `folder`   | path or `null` | `null`: `$XDG_DATA_HOME/vibecheck-jev`, or `~/.local/share/vibecheck-jev` | Where the ledger and the Laya install live           |
+| `database` | path or `null` | `null`: `ledger.sqlite3` in the data folder                               | The ledger database. `VIBECHECK_JEV_DB` overrides it |
+
+## What each check does
+
+Checks run in two places. The **ledger** reads what agents report through the tools. The **hooks** read the agent's own turns. When a reading cannot be taken because no source answers, the ledger applies the change as reported and records the reading as unavailable, and a hook lets the work go ahead with a message on stderr.
+
+A check with a gate keeps a task open or blocks the agent. A flag is recorded and shown in status without stopping anything.
+
+| Check                           | Reads                                                                                                                                        | Runs                                                                                      | Effect                                                                       | Thresholds and what raising them does                                                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `vibecheck.claims-done`         | A done report against the task's goal, acceptance criteria, accepted exceptions and the code checks' results                                 | `work_update` to complete; the Stop hook when the session has open claims; `check report` | Gate: the task stays open with the reason                                    | `blockAt` 0.6: raise to hold fewer reports (only clear overclaims)                                                                                           |
+| `vibecheck.brief-scope`         | A brief or plan change against the plan, the claimed task and its exceptions                                                                 | Brief hook; `plan_publish` and `plan_edit`; `check brief`                                 | Gate in the hook (the brief is refused); flag on plan changes                | `blockAt` 0.6: raise to refuse fewer briefs                                                                                                                  |
+| `vibecheck.brief-carries-rules` | A new subagent's brief against the project's and task's rules                                                                                | Brief hook on launches                                                                    | Gate                                                                         | `governedAt` 0.55: raise to act only when a rule clearly governs the work. `carriesAt` 0.5: raise to demand the rules be stated more plainly (more refusals) |
+| `vibecheck.deferral`            | A reply or report for work put off to later                                                                                                  | Stop hook; blocked and released updates; `check message`                                  | Gate in the hook; flag in the ledger                                         | `blockAt` 0.6: raise to block fewer replies                                                                                                                  |
+| `vibecheck.question-answered`   | Whether the user asked a question and the reply answers it up front                                                                          | Stop hook                                                                                 | Gate                                                                         | `asksAt` 0.6: raise to count fewer messages as questions. `answeredAt` 0.5: raise to demand more direct answers (more blocks)                                |
+| `vibecheck.asks-permission`     | A reply asking to approve something the recorded authorizations or the user's own request already allow                                      | Stop hook                                                                                 | Gate                                                                         | `blockAt` 0.6: raise to block fewer replies                                                                                                                  |
+| `vibecheck.claim-grounded`      | Each sentence of a reply against the turn's tool output, claimed files first. Plans, proposals and "still running" statements are exempt     | Stop hook                                                                                 | Gate, naming the sentence                                                    | `blockAt` 0.6: raise to block fewer sentences. `planAt` 0.5: raise to exempt fewer sentences as plans or proposals (more blocks)                             |
+| `vibecheck.user-pauses`         | Whether the user asked the agent to pause                                                                                                    | Stop hook, before the others                                                              | A pause skips the other Stop checks                                          | `pausingAt` 0.6: raise to recognize fewer pauses (more replies checked)                                                                                      |
+| `vibecheck.stop-reason`         | A reason for leaving work: accepted by the project, an external block, or an excuse                                                          | Blocked and released updates; `check report`                                              | Flag; a confident excuse is flagged, a claimed rule or block asks for review | `leavesAt` 0.35: raise to treat fewer passages as leaving work. `confidenceAt` 0.4: raise to flag excuses only when the reading is surer                     |
+| `vibecheck.gives-up`            | A message abandoning an item with work left                                                                                                  | Released updates with a report; `watch-agents`                                            | Flag                                                                         | `blockAt` 0.6: raise to flag fewer messages                                                                                                                  |
+| `vibecheck.handoff-complete`    | A handoff note for open work, state, blockers and next step                                                                                  | `work_update` handoff                                                                     | Flag; a handoff with no note is always flagged                               | `presentAt` 0.5: raise to demand fuller notes (more flags)                                                                                                   |
+| `vibecheck.stalled`             | A claim's recent reports for being stuck or abandoned                                                                                        | Progress reports after three earlier ones                                                 | Flag in status                                                               | `flagAt` 0.6: raise to flag fewer claims                                                                                                                     |
+| `vibecheck.blocker-triage`      | Who a blocker needs (the user, an agent, or something external) and how urgent it is                                                         | Blocked updates                                                                           | Orders the attention list                                                    | none                                                                                                                                                         |
+| `vibecheck.claim-overlap`       | Two open claims for the same or conflicting work, even on different files                                                                    | `work_claim`                                                                              | Flag in status                                                               | `flagAt` 0.6: raise to flag fewer pairs                                                                                                                      |
+| `vibecheck.commit-honesty`      | A commit message against the task and the files it changed                                                                                   | Completion with a readable commit                                                         | Flag                                                                         | `matchAt` 0.4: raise to flag more mismatches. `overstatesAt` 0.6: raise to flag fewer overstatements                                                         |
+| `vibecheck.task-duplicate`      | A new task against existing tasks                                                                                                            | `plan_publish`, `plan_edit`                                                               | Flag; a large overlap asks for review                                        | `duplicateAt` 0.6 and `overlapAt` 0.7: raise to flag fewer pairs                                                                                             |
+| `vibecheck.plan-coverage`       | Whether the plan's tasks would achieve the recorded plan goal                                                                                | Plan changes when the policy has a goal                                                   | Flag                                                                         | `coversAt` 0.5: raise to flag more plans as incomplete                                                                                                       |
+| `vibecheck.fallback-added`      | A diff for a change that silently weakens a requirement: a required dependency made optional, its failure swallowed, or a fallback hiding it | `check diff`                                                                              | Exit code 2                                                                  | `blockAt` 0.6: raise to flag fewer hunks                                                                                                                     |
+| `vibecheck.commit-paths`        | Whether a recorded commit changed any claimed path (code, no reading)                                                                        | Completion with a commit and a readable checkout                                          | Gate                                                                         | none                                                                                                                                                         |
+| `vibecheck.exception-check`     | Whether a file recorded as data-only holds control flow (code, no reading)                                                                   | Completion when the task has a data-only exception                                        | Gate                                                                         | none                                                                                                                                                         |
+| `vibecheck.parent-rollup`       | Whether every child of a task verified (code, no reading)                                                                                    | Completion of a task with children                                                        | Gate, then claims-done reads the parent's own criteria                       | none                                                                                                                                                         |
+
+The delete guard is not a model check: it refuses a shell `rm`, `rmdir`, `unlink` or `shred` through an unguarded `$VAR` or `${VAR}`, and asks the agent to use a literal path or `"${VAR:?}"`. Turn it off with `"hooks": { "bashGuard": false }`.
+
+Turning a check off means it never reads and records nothing. A gate that is off lets the work through as reported; turning off `vibecheck.claims-done` makes every done report complete its task, marked unverified.
+
+Codex seals the messages its agents send each other, so the brief check cannot read Codex subagent briefs. It says so on stderr and lets them through; the Stop checks and the delete guard work the same in both clients.
+
+## Record the standard the checks read
+
+The checks are only as specific as what the ledger records. When the coordinator publishes or edits the plan, each task can carry:
+
+```json
+{
+  "id": "csv-export",
+  "label": "CSV export for the reports page",
+  "goal": "Users can download the report table as CSV",
+  "criteria": [
+    "every visible column is exported",
+    "the file opens in a spreadsheet"
+  ],
+  "rules": ["keep the export under 2 seconds for 10,000 rows"],
+  "exceptions": [
+    {
+      "description": "generated bindings need no tests",
+      "paths": ["src/reports/generated.ts"],
+      "data_only": true
+    }
+  ],
+  "parent": "reports-page"
+}
+```
+
+and the request can carry a project policy:
+
+```json
+"policy": {
+  "goal": "Ship the reports page with CSV and PDF export",
+  "rules": ["every schema change is a new migration in db/migrations/"],
+  "authorizations": ["edit any file in the repository", "run the test suite and local migrations"],
+  "stop_reasons": ["files under vendor/ are third-party and never edited"]
+}
+```
+
+Agents report with a `report` on each update that completes, blocks, releases or hands off work. See [docs/protocol.md](docs/protocol.md) for every field.
+
+## Read verified status
+
+`project_status` begins with `attention` when anything needs it. It lists done reports held open, blockers that need the user or are urgent, stalled claims, overlapping claims, completed tasks that could not be verified, and other flags. Each item gives the check, the reason and the history entry. `verification` shows each task's latest done check as `verified`, `held` or `unverified` beside the status the agent reported.
+
+A mutation's response carries `verification` items for the checks it ran, including `reported_status` and `applied_status` when a done report was held. `work_history` returns the `verifications` for the matched work: each verdict with its check, version, the source and model that answered, the readings, the decision and the reason, and every report the agents sent.
+
+## Calibrate
+
+Checks ship with thresholds tuned on hosted Jev. Another source may read the same fixtures a little higher or lower.
+
+- `vibecheck-jev measure fixtures [--source ID] [--battery CHECK-ID] [--runs N]` repeats every fixture uncached and prints the worst margin to each fixture's bounds, marked FAIL (outside a bound) or THIN (within 0.10), then lists the fixtures that fail on that source.
+- `vibecheck-jev fixtures [--source ID]` runs each fixture once and exits nonzero on any failure.
+- `vibecheck-jev label list|mark|mark-where|mark-last` records whether live verdicts were right. Labels are history entries in the ledger.
+- `vibecheck-jev measure live [--project ID]` shows, per check and source, how many readings flagged and how many labeled flags were right.
+- `vibecheck-jev measure replay [CHECK-ID] [--source ID]` re-reads every labeled verdict with the current checks and thresholds and reports precision and recall.
+
+When a check reads a fixture wrong on your source, change that check's threshold for that source under `checks.<id>.sourceThresholds.<source id>`, run the fixtures again, and confirm with replay once you have labels.
+
+## Run Laya locally
+
+[Laya](https://huggingface.co/convaiinnovations/laya) is an open-source Jev-compatible model (Apache-2.0 weights) that runs on ONNX Runtime, through [@receptron/laya](https://github.com/receptron/laya). It needs npm for the install, about 2 GB of RAM, and downloads about 1.7 GB of weights on first use into `~/.cache/receptron-laya` (set `LAYA_CACHE` or `load.cacheDir` to move it).
 
 ```bash
-git clone https://github.com/mgd34msu/vibecheck.git
-cd vibecheck
-bun install --frozen-lockfile
-bun src/cli.ts --version
-bun src/cli.ts
+vibecheck-jev laya install      # installs Laya and ONNX Runtime into the data folder
+vibecheck-jev laya serve        # loads the model and answers on 127.0.0.1:8723
 ```
 
-Bun runs the TypeScript source directly. To run compiled JavaScript with Node.js 24 or later, build it first:
+Nothing is installed into the plugin folder or at plugin startup. The server runs under Bun or Node.js; ONNX Runtime's native addon loads under both. Add the source:
+
+```jsonc
+{ "kind": "laya", "id": "laya", "port": 8723, "autostart": false }
+```
+
+With `"autostart": true`, a hook or the ledger starts `laya serve` in the background when it finds Laya not running; that first reading goes to the next source while the model loads. Laya's English checkpoint reads at most 512 tokens of state, choice options up to 192 tokens and about 20 options, so longer readings skip it and go to the next source. Route short checks to it:
+
+```jsonc
+"vibecheck.question-answered": { "sources": ["laya", "typesafe"] },
+"vibecheck.user-pauses": { "sources": ["laya", "typesafe"] }
+```
+
+Verify it with `vibecheck-jev sources --source laya` and `vibecheck-jev measure fixtures --source laya --runs 3`.
+
+## Run Jev-Style locally
+
+[Jev-Style](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3) is an open decision model (Apache-2.0) with a Python library and no server. The optional adapter in [adapters/jev-style](adapters/jev-style/README.md) loads it once and serves the wire API. vibecheck-jev never installs or starts it.
 
 ```bash
-bun run build
-node dist/cli.js --version
-node dist/cli.js
+hf download chaoliangUNSW/Jev-Style-0.8B-Decision-v3 --local-dir ./Jev-Style-0.8B-Decision-v3
+pip install -r ./Jev-Style-0.8B-Decision-v3/requirements.txt
+python adapters/jev-style/server.py --model-dir ./Jev-Style-0.8B-Decision-v3 --port 8766
 ```
 
-The package name is `@mgd34msu/vibecheck`. It is not published to the npm registry. The package declares both `vibecheck` and `project-board` commands for the same CLI.
+The GGUF builds run on llama.cpp instead of torch; see the adapter's README for `--runtime gguf`. Add it as an `openjev` source. It reads up to 25,600 tokens, so it suits the evidence-heavy checks:
 
-## Start a local server
+```jsonc
+{
+  "kind": "openjev",
+  "id": "jev-style",
+  "baseURL": "http://127.0.0.1:8766",
+  "model": "jev-style",
+  "limits": { "maxStateTokens": 25600 },
+}
+```
 
-The default transport is stdio. The process waits for an MCP client, so a quiet terminal is expected. Stop it with Ctrl-C when configuring your client.
+Verify it with `vibecheck-jev sources --source jev-style` and `vibecheck-jev measure fixtures --source jev-style --runs 3`.
 
-Use an absolute path to [scripts/run-server.sh](scripts/run-server.sh) as your client's MCP command. Copy [examples/mcp.json](examples/mcp.json) and replace the example paths. Put its command, arguments, and environment into your client's supported MCP configuration format.
+## Commands
 
-All local clients must use the same absolute database path to share a board. Each client may start its own stdio process. Keep SQLite on local disk; use the HTTP server below for clients on different machines. Do not put the database on a network share.
+The plugin's launcher, `scripts/vibecheck-jev.sh`, runs every command. From a source checkout, `bun src/cli.ts` does the same.
 
-The default database is `$XDG_DATA_HOME/project-board/board.sqlite3`, or `$HOME/.local/share/project-board/board.sqlite3` when `XDG_DATA_HOME` is unset. Set `PROJECT_BOARD_DB` or pass `--database` to choose another file. The existing `PROJECT_BOARD_*` environment variables remain unchanged.
+| Command                                                               | What it does                                                                                                                                                        |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (no command)                                                          | Runs the MCP server; see `--help` for its options                                                                                                                   |
+| `hook pretool\|bash-guard\|stop --client claude\|codex`               | Runs a hook on the payload on stdin (the plugin's hook files call this)                                                                                             |
+| `sources [--source ID]`                                               | Probes each configured source                                                                                                                                       |
+| `measure fixtures\|live\|replay`                                      | Calibration, as above                                                                                                                                               |
+| `fixtures [--source ID]`                                              | One pass of every fixture                                                                                                                                           |
+| `label list\|mark\|mark-where\|mark-last`                             | Labels verdicts right or wrong                                                                                                                                      |
+| `check brief\|message\|report\|diff FILES [--project ID --task TASK]` | Runs a check on files; with a project and task, the standard comes from the ledger. Exit 0 clean, 2 flagged, 1 unreadable                                           |
+| `watch-agents --project ID [--session ID]`                            | Reads new messages from a session's descendant agents (found through the ledger's session ancestry) for items given up; `--transcript FILE` reads given transcripts |
+| `exception-check FILE...`                                             | Whether files hold data only                                                                                                                                        |
+| `report-of AGENT-OR-SESSION-ID [DIRECTORY]`                           | Prints an agent's final reply from its transcript                                                                                                                   |
+| `laya install\|serve`                                                 | Installs and serves Laya                                                                                                                                            |
+| `config path\|init [--force]\|check`                                  | Config file helpers                                                                                                                                                 |
 
-## Start a shared HTTP server
+## Data and the database
 
-Run the server on the machine that holds the local SQLite file:
+The ledger database defaults to `$XDG_DATA_HOME/vibecheck-jev/ledger.sqlite3`, or `~/.local/share/vibecheck-jev/ledger.sqlite3`. Set `data.database` in the config or `VIBECHECK_JEV_DB` in the environment to use another file; the environment variable wins. Keep the database on local disk, outside plugin caches; plugin upgrades and removal do not touch it. The ledger does not create backups.
+
+To keep using a database created by vibecheck, point vibecheck-jev at it, for example `"data": { "database": "~/.local/share/project-board/board.sqlite3" }`. It opens unchanged: the schema version stays 1 and the new tables are added beside the old ones, so vibecheck can still open it too. History is immutable in the database itself: updates and deletes of history rows are refused. Idempotency receipts older than 30 days are pruned as the ledger writes.
+
+## Share a ledger over HTTP
+
+Run the server on the machine that holds the database:
 
 ```bash
-read -rsp 'Board bearer token: ' PROJECT_BOARD_TOKEN
-printf '\n'
-export PROJECT_BOARD_TOKEN
-export PROJECT_BOARD_DB="$HOME/.local/share/project-board/board.sqlite3"
-export PROJECT_BOARD_PROJECTS='my-project'
-bun src/cli.ts --transport streamable-http --host 127.0.0.1 --port 8765
+read -rsp 'Ledger bearer token: ' VIBECHECK_JEV_TOKEN; printf '\n'
+export VIBECHECK_JEV_TOKEN
+export VIBECHECK_JEV_PROJECTS='my-project'
+bash scripts/vibecheck-jev.sh --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
-For compiled Node.js, replace `bun src/cli.ts` with `node dist/cli.js` after building.
-
-Connect an MCP client to `http://127.0.0.1:8765/mcp` with the header `Authorization: Bearer <your token>`. The server requires a token even on loopback. For remote clients, provide HTTPS through your existing reverse proxy and pass `--allowed-host` for its public host. Keep the SQLite file on the server's local disk.
-
-`PROJECT_BOARD_PROJECTS` restricts both transports to the listed comma-separated project IDs. Leave it unset to allow all projects. A configured empty list fails startup. The HTTP token grants access to the configured projects; it does not identify individual agents. Local stdio trusts its caller, and session identities are cooperative self-reports.
-
-## Keep data across upgrades
-
-Keep the database outside plugin caches. The default XDG data path and any custom `PROJECT_BOARD_DB` path remain under your control. Plugin replacement or removal does not delete ledger data. The board does not create backups.
-
-Pinned marketplace installations stay tied to the selected release. Select the desired release when upgrading. Remove the Claude plugin with `claude plugin uninstall vibecheck@vibecheck`; remove the Codex plugin with `codex plugin remove vibecheck@vibecheck`.
+Clients connect to `http://127.0.0.1:8765/mcp` with `Authorization: Bearer <token>`. The token is required even on loopback. Put remote clients behind HTTPS and pass `--allowed-host` for the public host. `VIBECHECK_JEV_PROJECTS` limits both transports to the listed projects. For other local MCP clients, [examples/mcp.json](examples/mcp.json) shows a stdio entry.
 
 ## Tools
 
-| Tool             | Purpose                                                               |
-| ---------------- | --------------------------------------------------------------------- |
-| `project_join`   | Register or rejoin a project session with real identity and ancestry. |
-| `plan_publish`   | Publish the root's complete task inventory.                           |
-| `plan_edit`      | Atomically add or update task definitions, dependencies, and lineage. |
-| `plan_read`      | Retrieve a complete plan revision or compare two revisions.           |
-| `plan_ack`       | Record a session's review of a complete plan revision.                |
-| `work_claim`     | Claim ownership or contribute under a parent's work.                  |
-| `work_update`    | Report progress, blockers, integration, release, or handoff.          |
-| `project_status` | Read compact current state or explicit complete current state.        |
-| `work_history`   | Recover work by task, session, path, branch, or commit.               |
+| Tool             | Purpose                                                                                |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| `project_join`   | Register or rejoin a project session with real identity and ancestry                   |
+| `plan_publish`   | Publish the complete task inventory with goals, criteria, rules, exceptions and policy |
+| `plan_edit`      | Add or update tasks and their details atomically                                       |
+| `plan_read`      | Read a plan revision, or compare two                                                   |
+| `plan_ack`       | Record a session's review of a plan revision                                           |
+| `work_claim`     | Claim a task or contribute under a parent's work                                       |
+| `work_update`    | Report progress, blockers, completion, release or handoff, with a report               |
+| `project_status` | Current state, led by what needs attention, with verified status                       |
+| `work_history`   | Past work and its verification entries by task, session, path, branch or commit        |
 
-## Record work
+The full request and response reference is [docs/protocol.md](docs/protocol.md).
 
-Copy [the agent instructions](docs/agent-usage.md) into the project's `AGENTS.md`. Give every agent the same project ID and repository identity. The first `project_join` registers that project. Starting the server does not create projects or infer them from its working directory. The root owns and updates the shared plan. Workers claim existing tasks or contribute under their parent's work.
-
-The following examples show MCP `tools/call` parameters. Replace values such as `REAL_VENDOR_SESSION_ID`, `SESSION_ID`, and `WORK_ID` with real runtime identities and IDs returned by the board. Model and effort strings are opaque metadata; use the actual configured values. Revisions below illustrate a fresh board. Always use returned revisions in real calls.
-
-Join the project and retain the returned `session_id` and complete `task_map` from its `snapshot`. If the map is omitted for size, retrieve it with `plan_read`:
-
-```json
-{
-  "name": "project_join",
-  "arguments": {
-    "request": {
-      "project_id": "my-project",
-      "request_id": "join-1",
-      "repository": "https://example.com/team/repository.git",
-      "vendor": "ACTUAL_VENDOR",
-      "runtime": "ACTUAL_RUNTIME",
-      "external_session_id": "REAL_VENDOR_SESSION_ID",
-      "model": "ACTUAL_MODEL",
-      "effort": "ACTUAL_EFFORT"
-    }
-  }
-}
-```
-
-Publish the root's task plan:
-
-```json
-{
-  "name": "plan_publish",
-  "arguments": {
-    "request": {
-      "project_id": "my-project",
-      "request_id": "plan-1",
-      "session_id": "SESSION_ID",
-      "expected_revision": 0,
-      "tasks": [
-        { "id": "implement", "label": "Implement the change", "depends_on": [] }
-      ]
-    }
-  }
-}
-```
-
-Claim the task with its current task revision:
-
-```json
-{
-  "name": "work_claim",
-  "arguments": {
-    "request": {
-      "project_id": "my-project",
-      "request_id": "claim-1",
-      "session_id": "SESSION_ID",
-      "task_id": "implement",
-      "expected_revision": 1,
-      "location": {
-        "checkout": "/absolute/path/to/checkout",
-        "branch": "feature/change",
-        "target_branch": "main",
-        "paths": ["src/change.ts"]
-      }
-    }
-  }
-}
-```
-
-Report a blocker using the work and task revisions returned by the claim:
-
-```json
-{
-  "name": "work_update",
-  "arguments": {
-    "request": {
-      "project_id": "my-project",
-      "request_id": "blocked-1",
-      "session_id": "SESSION_ID",
-      "updates": [
-        {
-          "work_id": "WORK_ID",
-          "expected_revision": 1,
-          "expected_task_revision": 2,
-          "status": "blocked",
-          "blocker": "Waiting for the test fixture"
-        }
-      ]
-    }
-  }
-}
-```
-
-Read the shared status with one call:
-
-```json
-{
-  "name": "project_status",
-  "arguments": { "request": { "project_id": "my-project" } }
-}
-```
-
-Find the task's work attempts and history:
-
-```json
-{
-  "name": "work_history",
-  "arguments": {
-    "request": { "project_id": "my-project", "task_id": "implement" }
-  }
-}
-```
-
-At natural work boundaries, read `project_status` with your `known_plan_revision`. The response contains fresh operational facts keyed by stable task, work, and session IDs. Reuse the shared definition map instead of repeating the graph on every read. Normal status needs no cursor or page assembly.
-
-Normal status includes active, owned pending, and blocked tasks, work awaiting integration, available unowned pending tasks, and tasks with open contributions. Its complete structured JSON response has a 64 KiB UTF-8 budget. Counts disclose the scope and any omissions. If `limited` is true, `full:true` retrieves all current tasks, current owners, open contributors, all registered sessions, and the complete map. Full status includes no work history.
-
-To recover a lost map, request `include_map:true`. A stale `known_plan_revision` sets `map_changed:true` and requests a replacement map automatically. Maps are all-or-omitted. If `map_omitted` is true, follow `full_hint` with `full:true`, or use `plan_read` for the complete definitions alone.
-
-Edit part of the plan atomically without resending its inventory:
-
-```json
-{
-  "name": "plan_edit",
-  "arguments": {
-    "request": {
-      "project_id": "my-project",
-      "request_id": "edit-1",
-      "session_id": "SESSION_ID",
-      "expected_revision": 1,
-      "operations": [
-        {
-          "op": "update",
-          "task_id": "implement",
-          "label": "Implement and verify the change"
-        },
-        {
-          "op": "add",
-          "task": {
-            "id": "review",
-            "label": "Review the change",
-            "depends_on": ["implement"]
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-Read a complete definition map at a particular revision. Add `compare_to` to request a diff instead of the map:
-
-```json
-{
-  "name": "plan_read",
-  "arguments": { "request": { "project_id": "my-project", "revision": 2 } }
-}
-```
-
-Only after receiving and reviewing the complete map, acknowledge that revision:
-
-```json
-{
-  "name": "plan_ack",
-  "arguments": {
-    "request": {
-      "project_id": "my-project",
-      "request_id": "ack-2",
-      "session_id": "SESSION_ID",
-      "plan_revision": 2
-    }
-  }
-}
-```
-
-The root can change dependencies during work. Each edit validates the resulting graph and retains older definitions in revision history. Optional `supersedes` links record splits or replacements; they do not transfer work or cancel tasks. Acknowledgments record which complete revision each session has reviewed. Reads never acknowledge automatically.
-
-For field rules, retries, handoffs, advanced cursor reads, and history selectors, see [the protocol reference](docs/protocol.md). Status and timestamps describe the latest report, which may be stale. A successful database claim does not prevent another process from editing or committing the same Git files.
-
-## Validate the checkout
-
-Install the locked dependencies, then run verification:
+## Build from source
 
 ```bash
+git clone https://github.com/mgd34msu/vibecheck-jev.git
+cd vibecheck-jev
 bun install --frozen-lockfile
+bun run build:release
 bun run verify
 ```
 
-The verification command checks formatting, strict types, forbidden assertions, and bundled runtime freshness. It runs the behavior tests under Bun and compiled JavaScript under Node.js, then builds the package. Node.js 24 or later is required for the Node tests. After changing runtime source or dependencies, run `bun run build:release` to refresh the committed bundle before verification.
+`build:release` refreshes the bundled runtime `runtime/vibecheck-jev.mjs`, which includes the TypeSafe SDK, and writes the Claude and Codex plugin archives, the standalone runtime archive and `SHA256SUMS` to `artifacts/`. `verify` checks formatting, strict types, forbidden type escapes and bundle freshness, then runs the tests under Bun and as compiled JavaScript under Node.js 24 or later. The tests use a scripted judgment source and make no network calls. `bun run verify:release` checks the archives and runs their MCP servers and hooks on both runtimes.
 
-The verification suite runs 127 tests on Bun and compiled JavaScript on Node.js. CI checks Node.js 24 and 26. A frozen 995-case validation corpus and imported SQLite fixtures check compatibility with the Python implementation, including historical records and saved retry responses. The TypeScript compiler is version 7.0.2. A development-only TypeScript 6 compiler API parses source for the forbidden-type checks.
-
-The implementation derives domain types from input schemas. Boundary validation rejects invalid external data before business logic runs. Authored TypeScript uses no `any`, type assertions, non-null assertions, or compiler suppression comments. SQLite uses the runtime's built-in `bun:sqlite` or `node:sqlite` adapter.
-
-See [release notes](docs/releases/v1.0.2.md) for the release contents and verification status.
-
-The board retains reported metadata, not repository knowledge or conversations. It does not scan the repository to understand code. Session identities and work status are cooperative self-reports; Git commits and actual outcomes require separate verification. Dependencies and `blocking_path` describe the graph without scheduling work or estimating completion time.
+Dependency licenses are in `runtime/THIRD-PARTY-NOTICES.txt`. vibecheck-jev is released under the MIT license.

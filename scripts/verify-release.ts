@@ -18,14 +18,20 @@ import {
   getDefaultEnvironment,
 } from "@modelcontextprotocol/client/stdio";
 import { z } from "zod";
+import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import {
   artifactNames,
+  BUNDLE,
   commonFiles,
   generateBundle,
   generateNotices,
+  hookFile,
+  LAUNCHER,
   packageVersion,
   platforms,
   pluginFiles,
+  PRODUCT,
   root,
   run,
   sha256,
@@ -46,15 +52,34 @@ const toolNames = [
   "work_history",
 ].sort();
 const manifestSchema = z.object({
-  name: z.literal("vibecheck"),
+  name: z.literal(PRODUCT),
   version: z.string(),
+  hooks: z.string().optional(),
   mcpServers: z.object({
-    vibecheck: z.object({
+    "vibecheck-jev": z.object({
       command: z.literal("bash"),
       args: z.array(z.string()),
       cwd: z.string().optional(),
     }),
   }),
+});
+const hooksSchema = z.object({
+  hooks: z.record(
+    z.string(),
+    z.array(
+      z.object({
+        matcher: z.string().optional(),
+        hooks: z.array(
+          z.object({
+            type: z.literal("command"),
+            command: z.string(),
+            commandWindows: z.string().optional(),
+            timeout: z.number().int().positive(),
+          }),
+        ),
+      }),
+    ),
+  ),
 });
 
 async function json(path: string): Promise<unknown> {
@@ -70,11 +95,9 @@ export async function verifyVersions(directory: string): Promise<string> {
     assert.equal(manifest.version, version);
     const catalog = z
       .object({
-        name: z.literal("vibecheck"),
+        name: z.literal(PRODUCT),
         plugins: z
-          .array(
-            z.object({ name: z.literal("vibecheck"), source: z.unknown() }),
-          )
+          .array(z.object({ name: z.literal(PRODUCT), source: z.unknown() }))
           .length(1),
       })
       .parse(
@@ -91,23 +114,40 @@ export async function verifyVersions(directory: string): Promise<string> {
       catalog.plugins[0]?.source,
       platform === "codex" ? { source: "local", path: "./" } : "./",
     );
-    assert.deepEqual(manifest.mcpServers.vibecheck.args, [
-      platform === "codex"
-        ? "scripts/run-server.sh"
-        : "${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh",
+    assert.deepEqual(manifest.mcpServers["vibecheck-jev"].args, [
+      platform === "codex" ? LAUNCHER : `\${CLAUDE_PLUGIN_ROOT}/${LAUNCHER}`,
       "--transport",
       "stdio",
     ]);
     assert.equal(
-      manifest.mcpServers.vibecheck.cwd,
+      manifest.mcpServers["vibecheck-jev"].cwd,
       platform === "codex" ? "." : undefined,
     );
+    assert.equal(
+      manifest.hooks,
+      platform === "codex" ? `./${hookFile("codex")}` : undefined,
+    );
+    const hooks = hooksSchema.parse(
+      await json(join(directory, hookFile(platform))),
+    );
+    const root =
+      platform === "codex" ? "$PLUGIN_ROOT" : "${CLAUDE_PLUGIN_ROOT}";
+    for (const [event, groups] of Object.entries(hooks.hooks))
+      for (const group of groups)
+        for (const hook of group.hooks) {
+          assert.ok(
+            hook.command.startsWith(`bash "${root}/${LAUNCHER}" hook `),
+            `${platform} ${event} hook runs through the launcher`,
+          );
+          assert.equal(hook.commandWindows !== undefined, platform === "codex");
+        }
+    assert.deepEqual(Object.keys(hooks.hooks).sort(), ["PreToolUse", "Stop"]);
   }
   const skill = await readFile(
-    join(directory, "skills/vibecheck/SKILL.md"),
+    join(directory, "skills/vibecheck-jev/SKILL.md"),
     "utf8",
   );
-  assert.match(skill, /^---\nname: vibecheck\ndescription: .+\n---\n/u);
+  assert.match(skill, /^---\nname: vibecheck-jev\ndescription: .+\n---\n/u);
   return version;
 }
 
@@ -122,7 +162,7 @@ export async function exercisePlugin(
   const manifest = manifestSchema.parse(
     await json(join(directory, `.${platform}-plugin/plugin.json`)),
   );
-  const server = manifest.mcpServers.vibecheck;
+  const server = manifest.mcpServers["vibecheck-jev"];
   const arguments_ = server.args.map((value) =>
     value.replaceAll("${CLAUDE_PLUGIN_ROOT}", directory),
   );
@@ -131,9 +171,10 @@ export async function exercisePlugin(
     "Unresolved plugin variable",
   );
   const client = new Client({
-    name: "vibecheck-release-verifier",
+    name: "vibecheck-jev-release-verifier",
     version: "1.0.0",
   });
+  const configHome = await mkdtemp(join(tmpdir(), "vibecheck-jev-config-"));
   const transport = new StdioClientTransport({
     command: server.command,
     args: [...arguments_, "--database", database],
@@ -143,8 +184,9 @@ export async function exercisePlugin(
         : workingDirectory,
     env: {
       ...getDefaultEnvironment(),
-      VIBECHECK_RUNTIME: runtime,
-      PROJECT_BOARD_PROJECTS: "release-test",
+      VIBECHECK_JEV_RUNTIME: runtime,
+      VIBECHECK_JEV_PROJECTS: "release-test",
+      XDG_CONFIG_HOME: configHome,
     },
     stderr: "pipe",
   });
@@ -256,7 +298,80 @@ export async function exercisePlugin(
   } finally {
     clearTimeout(deadline);
     await client.close();
+    await rm(configHome, { recursive: true, force: true });
   }
+  exerciseHooks(directory, platform, runtime, database);
+}
+
+/**
+ * Runs each hook through the plugin's launcher with a client payload. The
+ * delete guard must refuse an unguarded delete; with no judgment source
+ * configured the brief check and the Stop checks must fail open.
+ */
+export function exerciseHooks(
+  directory: string,
+  platform: Platform,
+  runtime: Runtime,
+  database: string,
+): void {
+  const environment = {
+    PATH: process.env["PATH"] ?? "",
+    HOME: process.env["HOME"] ?? "",
+    VIBECHECK_JEV_RUNTIME: runtime,
+    VIBECHECK_JEV_DB: database,
+    XDG_CONFIG_HOME: join(
+      tmpdir(),
+      `vibecheck-jev-hook-config-${process.pid}-${platform}-${runtime}`,
+    ),
+  };
+  const common = {
+    session_id: "release-hook-session",
+    cwd: tmpdir(),
+    transcript_path: null,
+    ...(platform === "codex"
+      ? {
+          turn_id: "release-turn",
+          model: "release-model",
+          permission_mode: "default",
+        }
+      : {}),
+  };
+  const hook = (name: string, payload: object) =>
+    spawnSync(
+      "bash",
+      [join(directory, LAUNCHER), "hook", name, "--client", platform],
+      {
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        env: environment,
+        timeout: 30_000,
+      },
+    );
+  const guarded = hook("bash-guard", {
+    ...common,
+    hook_event_name: "PreToolUse",
+    tool_name: "Bash",
+    tool_input: { command: 'rm -rf "$TARGET/build"' },
+  });
+  assert.equal(guarded.status, 0, guarded.stderr);
+  assert.match(guarded.stdout, /"permissionDecision":"deny"/u);
+  const allowed = hook("bash-guard", {
+    ...common,
+    hook_event_name: "PreToolUse",
+    tool_name: "Bash",
+    tool_input: { command: 'rm -rf "${TARGET:?}/build"' },
+  });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout, "");
+  const stop = hook("stop", {
+    ...common,
+    hook_event_name: "Stop",
+    stop_hook_active: false,
+    last_assistant_message: "Done.",
+  });
+  assert.notEqual(stop.status, 2, stop.stderr);
+  assert.doesNotMatch(stop.stdout, /"decision":"block"/u);
+  rmSync(environment.XDG_CONFIG_HOME, { recursive: true, force: true });
 }
 
 function inventory(output: string, expected: string[]): void {
@@ -266,11 +381,11 @@ function inventory(output: string, expected: string[]): void {
     entries.length,
     "Duplicate archive entries",
   );
-  const files = expected.map((file) => `vibecheck/${file}`);
+  const files = expected.map((file) => `${PRODUCT}/${file}`);
   for (const entry of entries) {
     const name = entry.endsWith("/") ? entry.slice(0, -1) : entry;
     assert.ok(
-      (name === "vibecheck" || name.startsWith("vibecheck/")) &&
+      (name === PRODUCT || name.startsWith(`${PRODUCT}/`)) &&
         !name.includes("\\") &&
         name
           .split("/")
@@ -293,7 +408,7 @@ async function makeReadOnly(directory: string): Promise<void> {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) await makeReadOnly(path);
-    else await chmod(path, entry.name === "run-server.sh" ? 0o555 : 0o444);
+    else await chmod(path, entry.name === "vibecheck-jev.sh" ? 0o555 : 0o444);
   }
   await chmod(directory, 0o555);
 }
@@ -366,11 +481,11 @@ export async function verifyNativeInstall(
       "codex",
       "plugin",
       "add",
-      "vibecheck@vibecheck",
+      `${PRODUCT}@${PRODUCT}`,
     ]);
     assert.match(
       run("bwrap", [...arguments_, "codex", "plugin", "list"]),
-      /vibecheck/u,
+      /vibecheck-jev/u,
     );
   } else {
     run("bwrap", [...arguments_, "claude", "plugin", "validate", directory]);
@@ -387,11 +502,11 @@ export async function verifyNativeInstall(
       "claude",
       "plugin",
       "install",
-      "vibecheck@vibecheck",
+      `${PRODUCT}@${PRODUCT}`,
     ]);
     assert.match(
       run("bwrap", [...arguments_, "claude", "plugin", "list"]),
-      /vibecheck/u,
+      /vibecheck-jev/u,
     );
   }
   const manifest = manifestSchema.parse(
@@ -400,7 +515,7 @@ export async function verifyNativeInstall(
   const cached = join(
     sandbox,
     platform === "codex" ? ".codex" : ".claude",
-    "plugins/cache/vibecheck/vibecheck",
+    `plugins/cache/${PRODUCT}/${PRODUCT}`,
     manifest.version,
   );
   await rm(join(cached, "node_modules"), { recursive: true, force: true });
@@ -426,7 +541,7 @@ export async function verifyRelease(
 ): Promise<void> {
   const version = await verifyVersions(root);
   assert.equal(
-    sha256(await readFile(join(root, "runtime/vibecheck.mjs"))),
+    sha256(await readFile(join(root, BUNDLE))),
     sha256(await generateBundle()),
     "Committed runtime is stale; run bun run build:release",
   );
@@ -454,13 +569,15 @@ export async function verifyRelease(
       entry.digest,
       entry.name,
     );
-  const temporary = await mkdtemp(join(tmpdir(), "vibecheck release spaces "));
+  const temporary = await mkdtemp(
+    join(tmpdir(), "vibecheck-jev release spaces "),
+  );
   const readOnly: string[] = [];
   try {
     for (const platform of platforms) {
       const archive = join(
         outputDirectory,
-        `vibecheck-${platform}-plugin-${version}.zip`,
+        `${PRODUCT}-${platform}-plugin-${version}.zip`,
       );
       const files = pluginFiles(platform);
       inventory(run("unzip", ["-Z1", archive]), files);
@@ -475,7 +592,7 @@ export async function verifyRelease(
       for (const row of rows) {
         assert.equal(
           row.slice(0, 10),
-          row.endsWith("/scripts/run-server.sh") ? "-rwxr-xr-x" : "-rw-r--r--",
+          row.endsWith(`/${LAUNCHER}`) ? "-rwxr-xr-x" : "-rw-r--r--",
           "Unexpected ZIP entry type or permissions",
         );
         assert.ok(
@@ -486,7 +603,7 @@ export async function verifyRelease(
       const extracted = join(temporary, platform);
       await mkdir(extracted);
       run("unzip", ["-q", archive, "-d", extracted]);
-      const plugin = join(extracted, "vibecheck");
+      const plugin = join(extracted, PRODUCT);
       await compareFiles(plugin, files);
       await makeReadOnly(plugin);
       readOnly.push(plugin);
@@ -523,7 +640,7 @@ export async function verifyRelease(
     }
     const archive = join(
       outputDirectory,
-      `vibecheck-runtime-${version}.tar.gz`,
+      `${PRODUCT}-runtime-${version}.tar.gz`,
     );
     inventory(run("tar", ["-tzf", archive]), commonFiles);
     for (const row of run("tar", ["-tvzf", archive]).trim().split("\n"))
@@ -535,7 +652,7 @@ export async function verifyRelease(
     const extracted = join(temporary, "standalone");
     await mkdir(extracted);
     run("tar", ["-xzf", archive, "-C", extracted]);
-    const runtimeRoot = join(extracted, "vibecheck");
+    const runtimeRoot = join(extracted, PRODUCT);
     await compareFiles(runtimeRoot, commonFiles);
     await makeReadOnly(runtimeRoot);
     readOnly.push(runtimeRoot);
@@ -543,10 +660,10 @@ export async function verifyRelease(
       assert.equal(
         run(
           runtime,
-          [join(runtimeRoot, "runtime/vibecheck.mjs"), "--version"],
+          [join(runtimeRoot, BUNDLE), "--version"],
           temporary,
         ).trim(),
-        `vibecheck ${version}`,
+        `${PRODUCT} ${version}`,
       );
   } finally {
     for (const directory of readOnly) await makeWritable(directory);
@@ -565,6 +682,6 @@ if (
   );
   await verifyRelease(undefined, arguments_.includes("--native"));
   process.stdout.write(
-    "Verified release checksums, bundled bytes, source and extracted plugin MCP lifecycles on Bun and Node.\n",
+    "Verified release checksums, bundled bytes, hook files, and source and extracted plugin MCP lifecycles and hooks on Bun and Node.\n",
   );
 }

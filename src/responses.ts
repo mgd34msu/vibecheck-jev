@@ -12,6 +12,19 @@ import {
   workRecordSchema,
 } from "./schemas.js";
 import { compactStatusResponseSchema } from "./queries.js";
+import { projectPolicySchema } from "./schemas.js";
+
+export const verificationItemSchema = z.strictObject({
+  check: z.string(),
+  outcome: z.enum(["passed", "failed", "flagged", "review", "unavailable"]),
+  reason: z.string(),
+  entry_id: z.string(),
+  task_id: z.string().optional(),
+  work_id: z.string().optional(),
+  reported_status: z.string().optional(),
+  applied_status: z.string().optional(),
+});
+const verification = z.array(verificationItemSchema).optional();
 
 export const mutationFooterSchema = z.strictObject({
   cursor: cursorSchema,
@@ -37,6 +50,8 @@ export const planMutationResponseSchema = z.strictObject({
       owner_work_id: workIdSchema.optional(),
     }),
   ),
+  policy: projectPolicySchema.optional(),
+  verification,
 });
 export const planAckResponseSchema = z.strictObject({
   ...footer,
@@ -48,11 +63,13 @@ export const workClaimResponseSchema = z.strictObject({
   ...footer,
   task: taskRecordSchema,
   work: workRecordSchema,
+  verification,
 });
 export const workUpdateResponseSchema = z.strictObject({
   ...footer,
   tasks: z.array(taskRecordSchema),
   work: z.array(workRecordSchema),
+  verification,
 });
 export type ProjectJoinResult = z.infer<typeof projectJoinResponseSchema>;
 export type PlanMutationResult = z.infer<typeof planMutationResponseSchema>;

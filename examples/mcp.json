@@ -1,14 +1,14 @@
 {
   "mcpServers": {
-    "vibecheck": {
+    "vibecheck-jev": {
       "command": "bash",
       "args": [
-        "/absolute/path/to/vibecheck/scripts/run-server.sh",
+        "/absolute/path/to/vibecheck-jev/scripts/vibecheck-jev.sh",
         "--transport",
         "stdio"
       ],
       "env": {
-        "PROJECT_BOARD_DB": "/absolute/path/to/shared-data/vibecheck.sqlite3"
+        "VIBECHECK_JEV_DB": "/absolute/path/to/shared-data/ledger.sqlite3"
       }
     }
   }

@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Transaction } from "./db.js";
 import { BoardError } from "./errors.js";
 import { taskMap } from "./plans.js";
+import { detailPatch, saveDetails } from "./details.js";
 import {
   normalizeLocation,
   planRevisionSchema,
@@ -17,6 +18,8 @@ import {
   type ProjectJoin,
   type ProjectRecord,
   type SessionId,
+  type ProjectPolicy,
+  type TaskDetails,
   type TaskFields,
   type TaskId,
   type TaskRecord,
@@ -304,6 +307,8 @@ function savePlan(
   project: ProjectRecord,
   previous: Map<TaskId, TaskRecord>,
   tasks: Map<TaskId, TaskFields>,
+  patches: ReadonlyMap<TaskId, TaskDetails>,
+  policy: ProjectPolicy | undefined,
 ) {
   if (tasks.size > 10_000)
     throw new BoardError(
@@ -339,10 +344,18 @@ function savePlan(
     ...project,
     plan_revision: planRevisionSchema.parse(project.plan_revision + 1),
   });
+  const details = saveDetails(
+    tx,
+    updated.plan_revision,
+    new Set(tasks.keys()),
+    patches,
+    policy,
+  );
   return {
     plan_revision: updated.plan_revision,
-    task_map: taskMap(records),
+    task_map: taskMap(records, details.tasks),
     tasks: operational,
+    ...(details.policy === undefined ? {} : { policy: details.policy }),
   };
 }
 
@@ -358,7 +371,10 @@ export function planPublish(tx: Transaction, request: PlanPublish) {
     });
   }
   const tasks = new Map<TaskId, TaskFields>();
+  const patches = new Map<TaskId, TaskDetails>();
   for (const definition of request.tasks) {
+    const patch = detailPatch(definition);
+    if (patch !== undefined) patches.set(definition.id, patch);
     const fields = {
       label: definition.label,
       depends_on: definition.depends_on ?? [],
@@ -375,16 +391,21 @@ export function planPublish(tx: Transaction, request: PlanPublish) {
         : mergeTask(old, fields),
     );
   }
-  return savePlan(tx, project, previous, tasks);
+  return savePlan(tx, project, previous, tasks, patches, request.policy);
 }
 
 export function planEdit(tx: Transaction, request: PlanEdit) {
   const { project, previous } = planContext(tx, request);
   const tasks = new Map<TaskId, TaskFields>(previous);
   const touched = new Set<TaskId>();
+  const patches = new Map<TaskId, TaskDetails>();
   for (const operation of request.operations) {
     const taskId =
       operation.op === "add" ? operation.task.id : operation.task_id;
+    const patch = detailPatch(
+      operation.op === "add" ? operation.task : operation,
+    );
+    if (patch !== undefined) patches.set(taskId, patch);
     if (touched.has(taskId)) {
       throw new BoardError(
         "invalid",
@@ -413,6 +434,12 @@ export function planEdit(tx: Transaction, request: PlanEdit) {
           task_id: taskId,
         });
       }
+      const changed =
+        operation.label !== undefined ||
+        operation.depends_on !== undefined ||
+        operation.status !== undefined ||
+        operation.supersedes !== undefined;
+      if (!changed) continue;
       tasks.set(
         taskId,
         mergeTask(old, {
@@ -430,7 +457,7 @@ export function planEdit(tx: Transaction, request: PlanEdit) {
       );
     }
   }
-  return savePlan(tx, project, previous, tasks);
+  return savePlan(tx, project, previous, tasks, patches, request.policy);
 }
 
 export function planAck(tx: Transaction, request: PlanAck) {
@@ -582,7 +609,16 @@ function mergeLocation(old: LocationRecord, patch: Location): LocationRecord {
   };
 }
 
-export function workUpdate(tx: Transaction, request: WorkUpdate) {
+/**
+ * Applies a batch of work changes. A change in `holds` asked to complete work
+ * whose done check failed: its other fields apply, but the work and task keep
+ * their current open status.
+ */
+export function workUpdate(
+  tx: Transaction,
+  request: WorkUpdate,
+  holds: ReadonlyMap<WorkId, string> = new Map(),
+) {
   const project = tx.getProject(tx.projectId);
   tx.getSession(request.session_id);
   const updates = request.updates ?? [];
@@ -624,7 +660,9 @@ export function workUpdate(tx: Transaction, request: WorkUpdate) {
       integration_required: integrationRequired(tx, old),
     };
     if (change.action === undefined || change.action === "progress") {
-      const status = change.status ?? oldStatus;
+      const requested = change.status ?? oldStatus;
+      const status =
+        requested === "complete" && holds.has(old.id) ? oldStatus : requested;
       updated = {
         ...updated,
         status,

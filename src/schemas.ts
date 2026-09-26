@@ -29,9 +29,16 @@ export const shortTextSchema = z
   .refine((value) => Array.from(value).length <= 500, {
     message: "String should have at most 500 characters",
   });
+export const longTextSchema = z
+  .string()
+  .min(1)
+  .refine((value) => Array.from(value).length <= 20_000, {
+    message: "String should have at most 20000 characters",
+  });
 export const commitSchema = z
   .string()
-  .regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$(?![\s\S])/);
+  .regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$(?![\s\S])/)
+  .overwrite((value) => value.toLowerCase());
 export const taskStateSchema = z.enum([
   "pending",
   "in_progress",
@@ -116,6 +123,29 @@ export function normalizeLocation(location: Location = {}): LocationRecord {
   };
 }
 
+export const acceptedExceptionSchema = z.strictObject({
+  description: shortTextSchema,
+  paths: pathsSchema.optional(),
+  data_only: z.boolean().optional(),
+});
+const taskDetailsShape = {
+  goal: longTextSchema.optional(),
+  criteria: z.array(shortTextSchema).max(100).optional(),
+  rules: z.array(shortTextSchema).max(100).optional(),
+  exceptions: z.array(acceptedExceptionSchema).max(100).optional(),
+  parent: taskIdSchema.optional(),
+};
+export const taskDetailsSchema = z.strictObject(taskDetailsShape);
+export const projectPolicySchema = z.strictObject({
+  goal: longTextSchema.optional(),
+  rules: z.array(shortTextSchema).max(100).optional(),
+  authorizations: z.array(shortTextSchema).max(100).optional(),
+  stop_reasons: z.array(shortTextSchema).max(100).optional(),
+});
+export type AcceptedException = z.infer<typeof acceptedExceptionSchema>;
+export type TaskDetails = z.infer<typeof taskDetailsSchema>;
+export type ProjectPolicy = z.infer<typeof projectPolicySchema>;
+
 const mutationShape = {
   project_id: projectIdSchema,
   request_id: identifierSchema,
@@ -138,11 +168,13 @@ export const taskDefinitionSchema = z.strictObject({
   depends_on: z.array(taskIdSchema).max(1000).optional(),
   status: z.enum(["pending", "cancelled"]).optional(),
   supersedes: z.array(taskIdSchema).max(1000).optional(),
+  ...taskDetailsShape,
 });
 export const planPublishSchema = z.strictObject({
   ...sessionMutationShape,
   expected_revision: planRevisionSchema,
   tasks: z.array(taskDefinitionSchema).max(10000),
+  policy: projectPolicySchema.optional(),
 });
 export const planAddSchema = z.strictObject({
   op: z.literal("add"),
@@ -156,13 +188,19 @@ export const planUpdateSchema = z
     depends_on: z.array(taskIdSchema).max(1000).optional(),
     status: z.enum(["pending", "cancelled"]).optional(),
     supersedes: z.array(taskIdSchema).max(1000).optional(),
+    ...taskDetailsShape,
   })
   .refine(
     (operation) =>
       operation.label !== undefined ||
       operation.depends_on !== undefined ||
       operation.status !== undefined ||
-      operation.supersedes !== undefined,
+      operation.supersedes !== undefined ||
+      operation.goal !== undefined ||
+      operation.criteria !== undefined ||
+      operation.rules !== undefined ||
+      operation.exceptions !== undefined ||
+      operation.parent !== undefined,
     { message: "update requires at least one changed field" },
   );
 export const planOperationSchema = z.discriminatedUnion("op", [
@@ -173,6 +211,7 @@ export const planEditSchema = z.strictObject({
   ...sessionMutationShape,
   expected_revision: planRevisionSchema,
   operations: z.array(planOperationSchema).min(1).max(10000),
+  policy: projectPolicySchema.optional(),
 });
 export const planAckSchema = z.strictObject({
   ...sessionMutationShape,
@@ -213,16 +252,19 @@ export const workProgressSchema = z.strictObject({
   commit: commitSchema.nullable().optional(),
   integration_commit: commitSchema.nullable().optional(),
   handoff_to: z.null().optional(),
+  report: longTextSchema.optional(),
 });
 export const workReleaseSchema = z.strictObject({
   ...workChangeShape,
   action: z.literal("release"),
   handoff_to: z.null().optional(),
+  report: longTextSchema.optional(),
 });
 export const workHandoffSchema = z.strictObject({
   ...workChangeShape,
   action: z.literal("handoff"),
   handoff_to: sessionIdSchema,
+  report: longTextSchema.optional(),
 });
 export const workChangeSchema = z.discriminatedUnion("action", [
   workProgressSchema,
@@ -388,6 +430,7 @@ export const taskMapDefinitionSchema = z.strictObject({
   label: shortTextSchema,
   depends_on: z.array(taskIdSchema),
   supersedes: z.array(taskIdSchema).optional(),
+  ...taskDetailsShape,
 });
 export const taskMapSchema = z.record(z.string(), taskMapDefinitionSchema);
 export const planMetadataSchema = z.strictObject({

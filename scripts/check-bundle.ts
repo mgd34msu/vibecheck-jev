@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { generateBundle, generateNotices, root } from "./build-release.js";
+import {
+  BUNDLE,
+  generateBundle,
+  generateNotices,
+  root,
+} from "./build-release.js";
 
 assert.deepEqual(
-  new Uint8Array(await readFile(join(root, "runtime/vibecheck.mjs"))),
+  new Uint8Array(await readFile(join(root, BUNDLE))),
   await generateBundle(),
   "Runtime bundle is stale. Run bun run build:release.",
 );

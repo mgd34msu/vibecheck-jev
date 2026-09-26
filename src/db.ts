@@ -65,7 +65,37 @@ const schemaStatements = [
     digest TEXT NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL,
     PRIMARY KEY(project_id, actor_id, request_id)
   )`,
+  // Additive tables and triggers. They leave schema version 1 and every
+  // existing table unchanged, so databases written by earlier releases open
+  // as they are and earlier releases can still open this one.
+  "CREATE INDEX IF NOT EXISTS requests_created ON requests(project_id, created_at)",
+  `CREATE TABLE IF NOT EXISTS plan_details (
+    project_id TEXT NOT NULL, scope TEXT NOT NULL, id TEXT NOT NULL,
+    plan_revision INTEGER NOT NULL, body TEXT NOT NULL,
+    PRIMARY KEY (project_id, scope, id, plan_revision)
+  )`,
+  `CREATE TABLE IF NOT EXISTS verifications (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+    project_id TEXT, task_id TEXT, work_id TEXT, session_id TEXT,
+    kind TEXT NOT NULL, battery_id TEXT, source TEXT NOT NULL,
+    created_at TEXT NOT NULL, body TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS verifications_task ON verifications(project_id, task_id, seq)",
+  "CREATE INDEX IF NOT EXISTS verifications_work ON verifications(project_id, work_id, seq)",
+  "CREATE INDEX IF NOT EXISTS verifications_battery ON verifications(kind, battery_id, seq)",
+  "CREATE INDEX IF NOT EXISTS verifications_session ON verifications(session_id, seq)",
+  ...["changes", "verifications", "plan_details"].flatMap((table) =>
+    ["UPDATE", "DELETE"].map(
+      (event) =>
+        `CREATE TRIGGER IF NOT EXISTS ${table}_immutable_${event.toLowerCase()}
+         BEFORE ${event} ON ${table}
+         BEGIN SELECT RAISE(ABORT, 'history is immutable'); END`,
+    ),
+  ),
 ];
+
+/** Idempotency receipts older than this are pruned on write. */
+export const REQUEST_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const bodyRowSchema = z.object({ body: z.string() });
 const cachedRowSchema = z.object({ digest: z.string(), response: z.string() });
 const cursorRowSchema = z.object({ seq: cursorSchema });
@@ -108,10 +138,19 @@ export function encode(value: unknown): string {
   return encodeJson(jsonValueSchema.parse(value));
 }
 
-export class Transaction {
-  readonly now = new Date()
-    .toISOString()
-    .replace(/\.(\d{3})Z$/, ".$1000+00:00");
+/** Row access shared by project transactions and unscoped verification writes. */
+export interface SqlAccess {
+  readonly now: string;
+  queryRows<T>(schema: z.ZodType<T>, sql: string, values: SqlValue[]): T[];
+  execute(sql: string, values: SqlValue[]): void;
+}
+
+function timestamp(): string {
+  return new Date().toISOString().replace(/\.(\d{3})Z$/, ".$1000+00:00");
+}
+
+export class Transaction implements SqlAccess {
+  readonly now = timestamp();
   actorId: SessionId | undefined;
   private readonly changes = new Map<string, RecordChange>();
   private flushed = false;
@@ -161,10 +200,20 @@ export class Transaction {
   }
 
   private metadata(
+    kind: RecordChange["kind"],
+    id: string,
     previous: { revision: number; created_at: string } | undefined,
   ) {
+    // A record written more than once in one transaction keeps a single
+    // revision, so every stored revision appears in the change stream.
+    const rewrite = previous !== undefined && this.changes.has(`${kind}:${id}`);
     return {
-      revision: previous === undefined ? 1 : previous.revision + 1,
+      revision:
+        previous === undefined
+          ? 1
+          : rewrite
+            ? previous.revision
+            : previous.revision + 1,
       created_at: previous === undefined ? this.now : previous.created_at,
       updated_at: this.now,
     };
@@ -201,7 +250,7 @@ export class Transaction {
     const record = projectRecordSchema.parse({
       ...fields,
       id,
-      ...this.metadata(this.findProject(id)),
+      ...this.metadata("project", id, this.findProject(id)),
     });
     this.store({ kind: "project", id, record });
     return record;
@@ -219,7 +268,7 @@ export class Transaction {
     const record = sessionRecordSchema.parse({
       ...fields,
       id,
-      ...this.metadata(this.findSession(id)),
+      ...this.metadata("session", id, this.findSession(id)),
     });
     this.store({ kind: "session", id, record });
     return record;
@@ -237,7 +286,7 @@ export class Transaction {
     const record = taskRecordSchema.parse({
       ...fields,
       id,
-      ...this.metadata(this.findTask(id)),
+      ...this.metadata("task", id, this.findTask(id)),
     });
     this.store({ kind: "task", id, record });
     return record;
@@ -255,7 +304,7 @@ export class Transaction {
     const record = workRecordSchema.parse({
       ...fields,
       id,
-      ...this.metadata(this.findWork(id)),
+      ...this.metadata("work", id, this.findWork(id)),
     });
     this.store({ kind: "work", id, record });
     return record;
@@ -322,6 +371,14 @@ export class Transaction {
     return this.cursor();
   }
 
+  /** Deletes idempotency receipts older than the retention window. */
+  pruneRequests(olderThan: string): void {
+    this.execute(
+      "DELETE FROM requests WHERE project_id = ? AND created_at < ?",
+      [this.projectId, olderThan],
+    );
+  }
+
   getRequest(
     actorKey: string,
     requestId: string,
@@ -350,6 +407,15 @@ export class Transaction {
        VALUES(?, ?, ?, ?, ?, ?)`,
       [this.projectId, actorKey, requestId, digest, encode(response), this.now],
     );
+  }
+}
+
+function rollback(connection: SqlConnection): void {
+  try {
+    connection.exec("ROLLBACK");
+  } catch {
+    // SQLite already ended the transaction (for example after SQLITE_FULL);
+    // the original error is the one the caller needs.
   }
 }
 
@@ -406,7 +472,7 @@ export class Database {
         started = false;
         return;
       } catch (error) {
-        if (started && connection !== undefined) connection.exec("ROLLBACK");
+        if (started && connection !== undefined) rollback(connection);
         if (!isSqliteBusy(error) || performance.now() >= deadline) throw error;
       } finally {
         connection?.close();
@@ -422,6 +488,19 @@ export class Database {
     return this.transaction(projectId, false, callback);
   }
 
+  /** A transaction over rows that belong to no single project, such as verdicts from a session outside any ledger project. */
+  unscoped<T>(write: boolean, callback: (access: SqlAccess) => T): Promise<T> {
+    return this.run(write, (connection) => {
+      const now = timestamp();
+      return callback({
+        now,
+        queryRows: (schema, sql, values) =>
+          connection.all(sql, values).map((row) => schema.parse(row)),
+        execute: (sql, values) => connection.run(sql, values),
+      });
+    });
+  }
+
   write<T>(
     projectId: ProjectId,
     callback: (transaction: Transaction) => T,
@@ -429,10 +508,19 @@ export class Database {
     return this.transaction(projectId, true, callback);
   }
 
-  private async transaction<T>(
+  private transaction<T>(
     projectId: ProjectId,
     write: boolean,
     callback: (transaction: Transaction) => T,
+  ): Promise<T> {
+    return this.run(write, (connection) =>
+      callback(new Transaction(connection, projectId)),
+    );
+  }
+
+  private async run<T>(
+    write: boolean,
+    callback: (connection: SqlConnection) => T,
   ): Promise<T> {
     const initialization = (this.initialization ??= this.initialize());
     try {
@@ -451,14 +539,14 @@ export class Database {
         if (!write) connection.exec("PRAGMA query_only = ON");
         connection.exec(write ? "BEGIN IMMEDIATE" : "BEGIN");
         started = true;
-        const result = callback(new Transaction(connection, projectId));
+        const result = callback(connection);
         if (result instanceof Promise)
           throw new Error("database transaction callbacks must be synchronous");
         connection.exec("COMMIT");
         started = false;
         return result;
       } catch (error) {
-        if (started && connection !== undefined) connection.exec("ROLLBACK");
+        if (started && connection !== undefined) rollback(connection);
         if (started || !isSqliteBusy(error) || performance.now() >= deadline)
           throw error;
       } finally {

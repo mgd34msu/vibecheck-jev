@@ -1,15 +1,15 @@
 {
-  "name": "vibecheck",
-  "description": "The vibecheck work ledger plugin for coding agents.",
+  "name": "vibecheck-jev",
+  "description": "The vibecheck-jev plugin: a checked work ledger for coding agents.",
   "owner": {
     "name": "Mike Davis",
     "email": "mgd34msu@gmail.com"
   },
   "plugins": [
     {
-      "name": "vibecheck",
+      "name": "vibecheck-jev",
       "source": "./",
-      "description": "A passive work ledger for coding agents.",
+      "description": "A work ledger for coding agents whose reports are checked by a Jev-compatible judgment model.",
       "author": {
         "name": "Mike Davis",
         "email": "mgd34msu@gmail.com"

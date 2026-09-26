@@ -10,13 +10,19 @@ import {
   type PlanRead,
   type PlanReadResult,
   type PlanRevision,
+  type TaskDetails,
+  type TaskId,
   type TaskMap,
   type TaskRecord,
 } from "./schemas.js";
+import { planDetails } from "./details.js";
 
 export type { TaskMap } from "./schemas.js";
 
-export function taskMap(tasks: Iterable<TaskRecord>): TaskMap {
+export function taskMap(
+  tasks: Iterable<TaskRecord>,
+  details?: ReadonlyMap<TaskId, TaskDetails>,
+): TaskMap {
   return Object.fromEntries(
     Array.from(tasks, (task) => [
       task.id,
@@ -24,6 +30,7 @@ export function taskMap(tasks: Iterable<TaskRecord>): TaskMap {
         label: task.label,
         depends_on: task.depends_on,
         ...(task.supersedes?.length ? { supersedes: task.supersedes } : {}),
+        ...details?.get(task.id),
       },
     ]),
   );
@@ -65,8 +72,9 @@ function revision(
     actor_id: publication.actor_id,
     created_at: publication.created_at,
   };
+  const details = planDetails(tx, requested).tasks;
   if (requested === current)
-    return { definitions: taskMap(tx.allTasks()), metadata };
+    return { definitions: taskMap(tx.allTasks(), details), metadata };
 
   const rows = tx.queryRows(
     historicalTaskSchema,
@@ -89,6 +97,7 @@ function revision(
   return {
     definitions: taskMap(
       rows.map((row) => taskRecordSchema.parse(JSON.parse(row.record))),
+      details,
     ),
     metadata,
   };
