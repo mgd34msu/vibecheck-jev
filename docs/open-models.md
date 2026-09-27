@@ -4,21 +4,20 @@ An open Jev model runs on your own machine. Every one below answers the same Sys
 
 ## Where to get the models
 
-These are the models vibecheck-jev was built and tested with. The sections below cover setting up these and other Jev-compatible models:
+These are the models vibecheck-jev supports. The sections below cover setting up each one:
 
-| Model                    | Where to get it                                                                                                                                                                                                           |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                         |
-| Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start |
+| Model                    | Where to get it                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                                                                                                                                                                                             |
+| Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start                                                                                                                                                                     |
+| Jev-Style                | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3), or the GGUF build at [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF). Download with `hf download` and serve it through [adapters/jev-style](../adapters/jev-style/README.md) |
 
 ## Choose a model
 
-| Model                           | Maker              | Runs on                                                                  | Reads at most        | Best for                                                                 |
-| ------------------------------- | ------------------ | ------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------------------ |
-| [Laya](#laya)                   | Convai Innovations | CPU, about 2 GB of RAM                                                   | 512 tokens of state  | The short checks, on any machine, with nothing to set up but one command |
-| [Jev-Style](#jev-style)         | chaoliangUNSW      | CPU or GPU, through Python (torch) or llama.cpp                          | 25,600 tokens        | The checks that read long evidence, on a modest machine                  |
-| [OpenJev](#openjev-github30)    | GitHub30           | A GPU running an instruct model you choose                               | Depends on the model | Using a model you already have                                           |
-| [openjev](#openjev-razorback16) | razorback16        | An NVIDIA GPU with 24 GB of VRAM, or Apple silicon with about 16 GB free | Depends on the model | The fastest readings, when you have the hardware                         |
+| Model                   | Maker              | Runs on                                         | Reads at most       | Best for                                                                 |
+| ----------------------- | ------------------ | ----------------------------------------------- | ------------------- | ------------------------------------------------------------------------ |
+| [Laya](#laya)           | Convai Innovations | CPU, about 2 GB of RAM                          | 512 tokens of state | The short checks, on any machine, with nothing to set up but one command |
+| [Jev-Style](#jev-style) | chaoliangUNSW      | CPU or GPU, through Python (torch) or llama.cpp | 25,600 tokens       | The checks that read long evidence, on a modest machine                  |
 
 A common setup is Laya for the short checks, Jev-Style for the evidence-heavy ones, and hosted Jev behind both as a fallback; [combine several models](#combine-several-models) shows that config.
 
@@ -104,69 +103,6 @@ For the GGUF build (from the [GGUF repository](https://huggingface.co/chaoliangU
 ```
 
 **What to expect:** the adapter maps each answer from the model's library format into the System One format, based on the model card. It has not yet been run against the real model, so measure it (step 4) before relying on it.
-
-## OpenJev (GitHub30)
-
-[OpenJev](https://github.com/GitHub30/OpenJev) (MIT) turns an ordinary Hugging Face instruct model, such as Qwen, Llama, Gemma or SmolLM, into a System One server. You choose the model. Its documentation suggests Qwen2.5-7B on an A100 or L4 GPU and Qwen2.5-1.5B on a T4.
-
-**You need:** Python 3 with [uv](https://docs.astral.sh/uv/), and a GPU with CUDA PyTorch installed first. The model itself downloads from Hugging Face when the server starts.
-
-**Install and start it:**
-
-```bash
-git clone https://github.com/GitHub30/OpenJev.git && cd OpenJev
-uv venv && uv pip install -e ".[hf,server,dev]"
-openjev serve --model Qwen/Qwen2.5-1.5B-Instruct --port 8000
-```
-
-**Connect it:** the server answers on `http://127.0.0.1:8000` with the model name `jev-latest`.
-
-```jsonc
-{
-  "kind": "openjev",
-  "id": "openjev",
-  "baseURL": "http://127.0.0.1:8000",
-  "model": "jev-latest",
-}
-```
-
-**What to expect:** the readings come from a general-purpose instruct model, not one trained for these questions, so they can sit well away from the built-in thresholds. Measure it (step 4) before relying on it.
-
-## openjev (razorback16)
-
-[openjev](https://github.com/razorback16/openjev) serves DiffusionGemma 26B-A4B (Apache-2.0, NVIDIA and Google) as a System One server. It is the heaviest open option and the fastest on capable hardware: its README reports 31 ms for a three-question request on an RTX PRO 6000. It can also serve smaller models such as Laya on a CPU; see its README.
-
-**You need:** an NVIDIA GPU with at least 24 GB of VRAM and Docker, or Apple silicon with about 16 GB of free memory and Python 3.
-
-**Install and start it** with Docker:
-
-```bash
-git clone https://github.com/razorback16/openjev && cd openjev
-docker compose up -d
-```
-
-or on Apple silicon without Docker:
-
-```bash
-git clone https://github.com/razorback16/openjev && cd openjev
-pip install -e '.[mlx]'
-OPENJEV_BACKEND=mlx python -m openjev
-```
-
-**Connect it:** the server answers on `http://127.0.0.1:8080` with the model name `openjev-latest`.
-
-```jsonc
-{
-  "kind": "openjev",
-  "id": "openjev-gemma",
-  "baseURL": "http://127.0.0.1:8080",
-  "model": "openjev-latest",
-}
-```
-
-## Server keys
-
-Both open Jev servers accept an optional key, which you set on the server with `OPENJEV_API_KEY`. Give vibecheck-jev the same key by naming the variable on the source, as `"auth": { "apiKeyEnv": "OPENJEV_API_KEY" }`, or put it inline with `"auth": { "apiKey": "…" }`. Without a key on the server, leave `auth` out.
 
 ## Combine several models
 

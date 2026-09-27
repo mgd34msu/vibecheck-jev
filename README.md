@@ -50,7 +50,7 @@ To tell your agents how to use the ledger in a project, add the block in [docs/a
 
 Every check needs a judgment source: a model that answers the System One wire API (`POST /v1/systemone`) that TypeSafe's Jev defined. vibecheck-jev works with four kinds:
 
-- **An open Jev-compatible server** you run yourself, such as OpenJev or openjev.
+- **An open Jev-compatible server** you run yourself, such as the Jev-Style adapter.
 - **Laya**, an open-source Jev-compatible model, served locally by `vibecheck-jev laya serve`.
 - **Jev-Style**, an open decision model, served by the optional adapter in `adapters/jev-style`.
 - **Hosted Jev** from TypeSafe, which needs an API key.
@@ -77,21 +77,20 @@ List sources in the order they should be tried. When a source is unreachable, ra
 
 An open Jev model runs on your own machine instead of TypeSafe's hosted service. It costs nothing per reading and keeps your transcripts local. Each one answers the same questions as hosted Jev, so vibecheck-jev treats them all the same way once they are running.
 
-| Model                                              | Runs on                                                                  | Reads at most        | Best for                                                                 |
-| -------------------------------------------------- | ------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------------------ |
-| [Laya](docs/open-models.md#laya)                   | CPU, about 2 GB of RAM                                                   | 512 tokens of state  | The short checks; vibecheck-jev installs and serves it with two commands |
-| [Jev-Style](docs/open-models.md#jev-style)         | CPU or GPU, through Python (torch) or llama.cpp                          | 25,600 tokens        | The checks that read long evidence, on a modest machine                  |
-| [OpenJev](docs/open-models.md#openjev-github30)    | A GPU running an instruct model you choose                               | Depends on the model | Using a model you already have                                           |
-| [openjev](docs/open-models.md#openjev-razorback16) | An NVIDIA GPU with 24 GB of VRAM, or Apple silicon with about 16 GB free | Depends on the model | The fastest readings, when you have the hardware                         |
+| Model                                      | Runs on                                         | Reads at most       | Best for                                                                 |
+| ------------------------------------------ | ----------------------------------------------- | ------------------- | ------------------------------------------------------------------------ |
+| [Laya](docs/open-models.md#laya)           | CPU, about 2 GB of RAM                          | 512 tokens of state | The short checks; vibecheck-jev installs and serves it with two commands |
+| [Jev-Style](docs/open-models.md#jev-style) | CPU or GPU, through Python (torch) or llama.cpp | 25,600 tokens       | The checks that read long evidence, on a modest machine                  |
 
 ### Where to get the models
 
-These are the models vibecheck-jev was built and tested with. [docs/open-models.md](docs/open-models.md) covers setting up these and other Jev-compatible models:
+These are the models vibecheck-jev supports. [docs/open-models.md](docs/open-models.md) covers setting up each one:
 
-| Model                    | Where to get it                                                                                                                                                                                                           |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                         |
-| Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start |
+| Model                    | Where to get it                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                                                                                                                                                                                          |
+| Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start                                                                                                                                                                  |
+| Jev-Style                | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3), or the GGUF build at [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF). Download with `hf download` and serve it through [adapters/jev-style](adapters/jev-style/README.md) |
 
 The checks' thresholds were set on hosted Jev, and open models often read the same examples a little higher or lower. So after starting one, add it to `sources`, confirm it answers with `vibecheck-jev sources --source <id>`, and run `vibecheck-jev measure fixtures --source <id>` to see which checks need their own threshold for it or should go to another source.
 
@@ -148,7 +147,7 @@ Example with a local server first and hosted Jev as the fallback:
 
 ```jsonc
 "sources": [
-  { "kind": "openjev", "id": "local-jev", "baseURL": "http://127.0.0.1:8000", "model": "jev-latest" },
+  { "kind": "openjev", "id": "jev-style", "baseURL": "http://127.0.0.1:8766", "model": "jev-style" },
   { "kind": "typesafe", "id": "typesafe" }
 ]
 ```
