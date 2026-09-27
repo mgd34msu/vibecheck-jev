@@ -2,6 +2,13 @@
 # Runs the bundled vibecheck-jev runtime under Bun or Node.js 24+. The MCP
 # server, the hooks and every command go through this one launcher.
 set -euo pipefail
+if [[ -z "${TYPESAFE_API_KEY:-}" ]]; then
+  vibecheck_jev_shell_key="$(NO_AUTO_TMUX=1 bash -ic 'printf "%s" "${TYPESAFE_API_KEY:-}" >&3' 3>&1 </dev/null >/dev/null 2>/dev/null)" || vibecheck_jev_shell_key=
+  if [[ -n "$vibecheck_jev_shell_key" ]]; then
+    export TYPESAFE_API_KEY="$vibecheck_jev_shell_key"
+  fi
+  unset vibecheck_jev_shell_key
+fi
 vibecheck_jev_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 vibecheck_jev_runtime="${VIBECHECK_JEV_RUNTIME:-auto}"
 case "$vibecheck_jev_runtime" in
