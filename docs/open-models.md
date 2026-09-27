@@ -33,6 +33,28 @@ A common setup is Laya for the short checks, Jev-Style for the evidence-heavy on
 
 The config keys for every source kind are listed under [sources](../README.md#sources).
 
+## Jev (hosted)
+
+Jev is TypeSafe's hosted System One model, and the one the checks' built-in thresholds were set on. Nothing runs on your machine.
+
+**You need:** a TypeSafe account. TypeSafe runs Jev in early access and lists its price as $42 per billion input tokens at the time of writing.
+
+**Get a key:** sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key.
+
+**Connect it:** set the key in the environment Claude Code or Codex starts from:
+
+```bash
+export TYPESAFE_API_KEY="your key"
+```
+
+With no `sources` in the config, vibecheck-jev uses hosted Jev with that key. To list it next to local models, add:
+
+```jsonc
+{ "kind": "typesafe", "id": "typesafe" }
+```
+
+**Check it:** `vibecheck-jev sources --source typesafe` reports the answer time and the model (`jev-latest` by default).
+
 ## Laya
 
 [Laya](https://huggingface.co/convaiinnovations/laya) is a small open model built for System One questions, released by Convai Innovations with Apache-2.0 weights. It runs on a CPU through ONNX Runtime, using [@receptron/laya](https://github.com/receptron/laya). vibecheck-jev installs and serves it for you.
