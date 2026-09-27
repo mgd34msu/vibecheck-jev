@@ -77,22 +77,24 @@ List sources in the order they should be tried. When a source is unreachable, ra
 
 An open Jev model runs on your own machine instead of TypeSafe's hosted service. It costs nothing per reading and keeps your transcripts local. Each one answers the same questions as hosted Jev, so vibecheck-jev treats them all the same way once they are running.
 
-| Model                                      | Runs on                                         | Reads at most       | Best for                                                                 |
-| ------------------------------------------ | ----------------------------------------------- | ------------------- | ------------------------------------------------------------------------ |
-| [Laya](docs/open-models.md#laya)           | CPU, about 2 GB of RAM                          | 512 tokens of state | The short checks; vibecheck-jev installs and serves it with two commands |
-| [Jev-Style](docs/open-models.md#jev-style) | CPU or GPU, through Python (torch) or llama.cpp | 25,600 tokens       | The checks that read long evidence, on a modest machine                  |
+| Model                                           | Runs on                                         | Reads at most        | Best for                                                                 |
+| ----------------------------------------------- | ----------------------------------------------- | -------------------- | ------------------------------------------------------------------------ |
+| [Laya](docs/open-models.md#laya)                | CPU, about 2 GB of RAM                          | 512 tokens of state  | The short checks; vibecheck-jev installs and serves it with two commands |
+| [Jev-Style](docs/open-models.md#jev-style)      | CPU or GPU, through Python (torch) or llama.cpp | 25,600 tokens        | The checks that read long evidence, on a modest machine                  |
+| [OpenJev](docs/open-models.md#openjev-github30) | A GPU running an instruct model you choose      | Depends on the model | Using a model you already have                                           |
 
 ### Where to get the models
 
-vibecheck-jev has been tested with these three models. [docs/open-models.md](docs/open-models.md) covers setting up each one:
+vibecheck-jev has been tested with these four models. [docs/open-models.md](docs/open-models.md) covers setting up each one:
 
 | Model                    | Where to get it                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                                                                                                                                                                                          |
 | Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start                                                                                                                                                                  |
 | Jev-Style                | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3), or the GGUF build at [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF). Download with `hf download` and serve it through [adapters/jev-style](adapters/jev-style/README.md) |
+| OpenJev with Qwen        | Server: [github.com/GitHub30/OpenJev](https://github.com/GitHub30/OpenJev). Model: [huggingface.co/Qwen/Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct), which the server downloads when it starts                                                                                                                                                               |
 
-Other Jev-compatible models can work too: any server that answers the System One wire API (`POST /v1/systemone`) connects as an `openjev` source, as the Jev-Style adapter does. Only these three have been tested, so measure any other model with `vibecheck-jev measure fixtures --source <id>` before relying on it.
+Other Jev-compatible models can work too: any server that answers the System One wire API (`POST /v1/systemone`) connects as an `openjev` source, as the Jev-Style adapter does. Only these four have been tested, so measure any other model with `vibecheck-jev measure fixtures --source <id>` before relying on it.
 
 The checks' thresholds were set on hosted Jev, and open models often read the same examples a little higher or lower. So after starting one, add it to `sources`, confirm it answers with `vibecheck-jev sources --source <id>`, and run `vibecheck-jev measure fixtures --source <id>` to see which checks need their own threshold for it or should go to another source.
 

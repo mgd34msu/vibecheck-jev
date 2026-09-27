@@ -4,22 +4,24 @@ An open Jev model runs on your own machine. Every one below answers the same Sys
 
 ## Where to get the models
 
-vibecheck-jev has been tested with these three models. The sections below cover setting up each one:
+vibecheck-jev has been tested with these four models. The sections below cover setting up each one:
 
 | Model                    | Where to get it                                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                                                                                                                                                                                             |
 | Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start                                                                                                                                                                     |
 | Jev-Style                | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3), or the GGUF build at [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF). Download with `hf download` and serve it through [adapters/jev-style](../adapters/jev-style/README.md) |
+| OpenJev with Qwen        | Server: [github.com/GitHub30/OpenJev](https://github.com/GitHub30/OpenJev). Model: [huggingface.co/Qwen/Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct), which the server downloads when it starts                                                                                                                                                                  |
 
-Other Jev-compatible models can work too: any server that answers the System One wire API (`POST /v1/systemone`) connects as an `openjev` source, as the Jev-Style adapter does. Only these three have been tested, so measure any other model with `vibecheck-jev measure fixtures --source <id>` before relying on it.
+Other Jev-compatible models can work too: any server that answers the System One wire API (`POST /v1/systemone`) connects as an `openjev` source, as the Jev-Style adapter does. Only these four have been tested, so measure any other model with `vibecheck-jev measure fixtures --source <id>` before relying on it.
 
 ## Choose a model
 
-| Model                   | Maker              | Runs on                                         | Reads at most       | Best for                                                                 |
-| ----------------------- | ------------------ | ----------------------------------------------- | ------------------- | ------------------------------------------------------------------------ |
-| [Laya](#laya)           | Convai Innovations | CPU, about 2 GB of RAM                          | 512 tokens of state | The short checks, on any machine, with nothing to set up but one command |
-| [Jev-Style](#jev-style) | chaoliangUNSW      | CPU or GPU, through Python (torch) or llama.cpp | 25,600 tokens       | The checks that read long evidence, on a modest machine                  |
+| Model                        | Maker              | Runs on                                         | Reads at most        | Best for                                                                 |
+| ---------------------------- | ------------------ | ----------------------------------------------- | -------------------- | ------------------------------------------------------------------------ |
+| [Laya](#laya)                | Convai Innovations | CPU, about 2 GB of RAM                          | 512 tokens of state  | The short checks, on any machine, with nothing to set up but one command |
+| [Jev-Style](#jev-style)      | chaoliangUNSW      | CPU or GPU, through Python (torch) or llama.cpp | 25,600 tokens        | The checks that read long evidence, on a modest machine                  |
+| [OpenJev](#openjev-github30) | GitHub30           | A GPU running an instruct model you choose      | Depends on the model | Using a model you already have                                           |
 
 A common setup is Laya for the short checks, Jev-Style for the evidence-heavy ones, and hosted Jev behind both as a fallback; [combine several models](#combine-several-models) shows that config.
 
@@ -127,6 +129,33 @@ For the GGUF build (from the [GGUF repository](https://huggingface.co/chaoliangU
 ```
 
 **What to expect:** the adapter maps each answer from the model's library format into the System One format. Measure it (step 4) and set thresholds for it where fixtures fail.
+
+## OpenJev (GitHub30)
+
+[OpenJev](https://github.com/GitHub30/OpenJev) (MIT) turns an ordinary Hugging Face instruct model, such as Qwen, into a System One server. You choose the model. Its documentation suggests Qwen2.5-7B on an A100 or L4 GPU and Qwen2.5-1.5B on a T4.
+
+**You need:** Python 3 with [uv](https://docs.astral.sh/uv/), and a GPU with CUDA PyTorch installed first. The model itself downloads from Hugging Face when the server starts.
+
+**Install and start it:**
+
+```bash
+git clone https://github.com/GitHub30/OpenJev.git && cd OpenJev
+uv venv && uv pip install -e ".[hf,server,dev]"
+openjev serve --model Qwen/Qwen2.5-1.5B-Instruct --port 8000
+```
+
+**Connect it:** the server answers on `http://127.0.0.1:8000` with the model name `jev-latest`.
+
+```jsonc
+{
+  "kind": "openjev",
+  "id": "openjev",
+  "baseURL": "http://127.0.0.1:8000",
+  "model": "jev-latest",
+}
+```
+
+**What to expect:** the readings come from a general-purpose instruct model, not one trained for these questions, so they can sit well away from the built-in thresholds. Measure it (step 4) before relying on it.
 
 ## Combine several models
 
