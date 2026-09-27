@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(spawn_agent|send_message|followup_task|send_input)$",
+        "matcher": "^((functions\\.)?collaboration\\.)?(spawn_agent|send_message|followup_task|send_input)$",
         "hooks": [
           {
             "type": "command",

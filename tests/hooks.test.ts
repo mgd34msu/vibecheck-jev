@@ -282,6 +282,42 @@ test("a Codex brief is read from spawn_agent; a sealed one is skipped with a not
   assert.match(sealed.stderr ?? "", /sealed/u);
 });
 
+test("Codex collaboration tool namespaces reach the brief judgment", async (t) => {
+  const transcript = writeTranscript(t, CODEX_LINES);
+  for (const prefix of ["collaboration.", "functions.collaboration."]) {
+    for (const name of [
+      "spawn_agent",
+      "send_message",
+      "followup_task",
+      "send_input",
+    ]) {
+      const setup = deps(t, "codex", () => 0.1);
+      const result = await preToolHook(
+        JSON.stringify({
+          ...codexCommon,
+          hook_event_name: "PreToolUse",
+          tool_name: `${prefix}${name}`,
+          tool_use_id: "namespaced-brief",
+          transcript_path: transcript,
+          tool_input: {
+            target: "tests",
+            task_name: "tests",
+            message: "Fix the failing checkout test and run the suite.",
+          },
+        }),
+        setup.deps,
+      );
+      assert.deepEqual(result, { exitCode: 0 });
+      assert.ok(
+        setup.provider?.requests.some(
+          (entry) => entry.batteryId === "vibecheck.brief-scope",
+        ),
+        `${prefix}${name} must be judged`,
+      );
+    }
+  }
+});
+
 test("hooks fail open with a message when no judgment source is usable", async (t) => {
   const claude = deps(t, "claude", undefined);
   const transcript = writeTranscript(t, CLAUDE_LINES);

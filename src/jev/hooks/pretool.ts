@@ -50,8 +50,12 @@ export async function preToolHook(
   const payload = parsePayload(preToolPayloadSchema, stdin);
   if (typeof payload === "string")
     return failOpen(deps.client, "PreToolUse", payload);
-  const launch = LAUNCH_TOOLS.has(payload.tool_name);
-  if (!launch && !MESSAGE_TOOLS.has(payload.tool_name))
+  const toolName =
+    deps.client === "codex"
+      ? payload.tool_name.replace(/^(?:functions\.)?collaboration\./u, "")
+      : payload.tool_name;
+  const launch = LAUNCH_TOOLS.has(toolName);
+  if (!launch && !MESSAGE_TOOLS.has(toolName))
     return allow(deps.client, "PreToolUse");
   const brief = inputString(payload.tool_input, "prompt", "message", "task");
   if (brief === undefined) return allow(deps.client, "PreToolUse");
