@@ -4,23 +4,12 @@ An open Jev model runs on your own machine. Every one below answers the same Sys
 
 ## Where to get the models
 
-These are the models vibecheck-jev uses:
+These are the models vibecheck-jev was built and tested with. The sections below cover setting up these and other Jev-compatible models:
 
-| Model             | Where to get it                                                                                                                                                                                                                                                                                                                                                                                                  | Status                                                                                                                                                     |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Jev (hosted)      | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                                                                                                                                                                                                                | Tested: the built-in thresholds were set on it                                                                                                             |
-| Laya              | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx), the ONNX weights, converted from [huggingface.co/convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya). `vibecheck-jev laya install` installs the runtime ([@receptron/laya](https://www.npmjs.com/package/@receptron/laya)), and the weights (about 1.7 GB) download on the first `vibecheck-jev laya serve` | Tested: installed, served and measured. 76 of 139 fixture readings fail at the built-in thresholds, so give it its own thresholds or only the short checks |
-| Jev-Style 0.8B v3 | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3) for PyTorch, or [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF) for llama.cpp. Served through [adapters/jev-style](../adapters/jev-style/README.md)                                              | Not yet tested: the adapter has not been run against the model                                                                                             |
-
-The GGUF builds on Hugging Face, for llama.cpp and LM Studio:
-
-| Model                                               | GGUF on Hugging Face                                                                                                                 |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Laya                                                | [huggingface.co/mys/laya-GGUF](https://huggingface.co/mys/laya-GGUF)                                                                 |
-| Laya multilingual                                   | [huggingface.co/mys/laya-multilingual-GGUF](https://huggingface.co/mys/laya-multilingual-GGUF)                                       |
-| Laya typed decisions                                | [huggingface.co/mys/laya-typed-decisions-GGUF](https://huggingface.co/mys/laya-typed-decisions-GGUF)                                 |
-| Jev-Style 0.8B v3                                   | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF) |
-| DiffusionGemma 26B-A4B (the openjev server's model) | [huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF)               |
+| Model                    | Where to get it                                                                                                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                         |
+| Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start |
 
 ## Choose a model
 
