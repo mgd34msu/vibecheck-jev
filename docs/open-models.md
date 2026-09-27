@@ -12,6 +12,16 @@ These are the models vibecheck-jev uses:
 | Laya              | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx), the ONNX weights, converted from [huggingface.co/convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya). `vibecheck-jev laya install` installs the runtime ([@receptron/laya](https://www.npmjs.com/package/@receptron/laya)), and the weights (about 1.7 GB) download on the first `vibecheck-jev laya serve` | Tested: installed, served and measured. 76 of 139 fixture readings fail at the built-in thresholds, so give it its own thresholds or only the short checks |
 | Jev-Style 0.8B v3 | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3) for PyTorch, or [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF) for llama.cpp. Served through [adapters/jev-style](../adapters/jev-style/README.md)                                              | Not yet tested: the adapter has not been run against the model                                                                                             |
 
+The GGUF builds on Hugging Face, for llama.cpp and LM Studio:
+
+| Model                                               | GGUF on Hugging Face                                                                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Laya                                                | [huggingface.co/mys/laya-GGUF](https://huggingface.co/mys/laya-GGUF)                                                                 |
+| Laya multilingual                                   | [huggingface.co/mys/laya-multilingual-GGUF](https://huggingface.co/mys/laya-multilingual-GGUF)                                       |
+| Laya typed decisions                                | [huggingface.co/mys/laya-typed-decisions-GGUF](https://huggingface.co/mys/laya-typed-decisions-GGUF)                                 |
+| Jev-Style 0.8B v3                                   | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF) |
+| DiffusionGemma 26B-A4B (the openjev server's model) | [huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF)               |
+
 ## Choose a model
 
 | Model                           | Maker              | Runs on                                                                  | Reads at most        | Best for                                                                 |
