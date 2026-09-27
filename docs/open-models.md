@@ -4,13 +4,15 @@ An open Jev model runs on your own machine. Every one below answers the same Sys
 
 ## Where to get the models
 
-These are the models vibecheck-jev supports. The sections below cover setting up each one:
+vibecheck-jev has been tested with these three models. The sections below cover setting up each one:
 
 | Model                    | Where to get it                                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Jev (hosted by TypeSafe) | Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) to create an API key. Nothing to download                                                                                                                                                                                                                             |
 | Laya                     | [huggingface.co/receptron/laya-onnx](https://huggingface.co/receptron/laya-onnx). `vibecheck-jev laya install` installs its runtime, and `vibecheck-jev laya serve` downloads these weights (about 1.7 GB) on first start                                                                                                                                                                     |
 | Jev-Style                | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3), or the GGUF build at [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF). Download with `hf download` and serve it through [adapters/jev-style](../adapters/jev-style/README.md) |
+
+Other Jev-compatible models can work too: any server that answers the System One wire API (`POST /v1/systemone`) connects as an `openjev` source, as the Jev-Style adapter does. Only these three have been tested, so measure any other model with `vibecheck-jev measure fixtures --source <id>` before relying on it.
 
 ## Choose a model
 
@@ -102,7 +104,7 @@ For the GGUF build (from the [GGUF repository](https://huggingface.co/chaoliangU
 }
 ```
 
-**What to expect:** the adapter maps each answer from the model's library format into the System One format, based on the model card. It has not yet been run against the real model, so measure it (step 4) before relying on it.
+**What to expect:** the adapter maps each answer from the model's library format into the System One format. Measure it (step 4) and set thresholds for it where fixtures fail.
 
 ## Combine several models
 
