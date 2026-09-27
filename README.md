@@ -10,6 +10,7 @@ It builds on the [vibecheck](https://github.com/mgd34msu/vibecheck) ledger and o
 
 - [Install](#install)
 - [Choose a judgment source](#choose-a-judgment-source)
+  - [Where to get a model](#where-to-get-a-model)
 - [The config file](#the-config-file)
 - [What each check does](#what-each-check-does)
 - [Record the standard the checks read](#record-the-standard-the-checks-read)
@@ -51,10 +52,51 @@ To tell your agents how to use the ledger in a project, add the block in [docs/a
 
 Every check needs a judgment source: a model that answers the System One wire API (`POST /v1/systemone`) that TypeSafe's Jev defined. vibecheck-jev works with four kinds:
 
-- **An open Jev-compatible server** you run yourself, such as an OpenJev server.
+- **An open Jev-compatible server** you run yourself, such as OpenJev or openjev (see [where to get a model](#where-to-get-a-model)).
 - **Laya**, an open-source Jev-compatible model, served locally by `vibecheck-jev laya serve`.
 - **Jev-Style**, an open decision model, served by the optional adapter in `adapters/jev-style`.
 - **Hosted Jev** from TypeSafe, which needs an API key.
+
+### Where to get a model
+
+vibecheck-jev does not include a model. Every source below answers the same kind of question, but they differ in who runs them, what hardware they need, and how closely their readings match the checks' built-in thresholds. Whichever you pick, run `vibecheck-jev measure fixtures --source <id>` once it answers: the fixtures show how that model's readings sit against each check, and [calibrate](#calibrate) explains how to adjust thresholds for it.
+
+| Model     | Made by            | Where to get it                                                                                                                                                         | Runs on                                                                                                                | Connect as                     |
+| --------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| Jev       | TypeSafe           | Hosted service. Sign in at [console.typesafe.ai](https://console.typesafe.ai/) and follow [docs.typesafe.ai](https://docs.typesafe.ai/) for an API key                  | TypeSafe's servers; nothing to install                                                                                 | `typesafe`                     |
+| OpenJev   | GitHub30           | [github.com/GitHub30/OpenJev](https://github.com/GitHub30/OpenJev) (MIT)                                                                                                | A Hugging Face instruct model of your choice; a GPU is recommended                                                     | `openjev`                      |
+| openjev   | razorback16        | [github.com/razorback16/openjev](https://github.com/razorback16/openjev)                                                                                                | DiffusionGemma 26B-A4B (Apache-2.0): an NVIDIA GPU with at least 24 GB of VRAM, or Apple silicon with about 16 GB free | `openjev`                      |
+| Laya      | Convai Innovations | Weights at [huggingface.co/convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya), run through [@receptron/laya](https://github.com/receptron/laya)     | CPU, through ONNX Runtime; about 2 GB of RAM                                                                           | `laya`                         |
+| Jev-Style | chaoliangUNSW      | [huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3), plus GGUF and MLX builds and a larger 2B v2 | Python with torch, or llama.cpp for the GGUF builds                                                                    | `openjev`, through the adapter |
+
+**Jev** is the hosted original. TypeSafe runs it in early access and lists its price as $42 per billion input tokens at the time of writing. It needs no hardware and has no input limit that affects these checks, which makes it the simplest start and the reference the built-in thresholds were set on.
+
+**OpenJev** (GitHub30) turns an ordinary instruct model into a Jev-compatible server. You choose the model; its documentation suggests Qwen2.5-7B on an A100 or L4 GPU and Qwen2.5-1.5B on a T4. Install and start it:
+
+```bash
+git clone https://github.com/GitHub30/OpenJev.git && cd OpenJev
+uv venv && uv pip install -e ".[hf,server,dev]"
+openjev serve --model Qwen/Qwen2.5-1.5B-Instruct --port 8000
+```
+
+It answers on `http://127.0.0.1:8000` with the model name `jev-latest`. Because the readings come from a general instruct model, check them with `measure fixtures` before relying on them.
+
+**openjev** (razorback16) serves DiffusionGemma 26B-A4B. It is the heaviest option and the fastest per request on a capable GPU. Start it with Docker, or with MLX on Apple silicon:
+
+```bash
+git clone https://github.com/razorback16/openjev && cd openjev
+docker compose up -d
+# or, on Apple silicon without Docker:
+pip install -e '.[mlx]' && OPENJEV_BACKEND=mlx python -m openjev
+```
+
+It answers on `http://127.0.0.1:8080` with the model name `openjev-latest`.
+
+Both open servers accept an optional key, set on the server through `OPENJEV_API_KEY`; give the same key to vibecheck-jev with `"auth": { "apiKeyEnv": "OPENJEV_API_KEY" }`.
+
+**Laya** is a small, purpose-built open model that runs on a CPU. vibecheck-jev installs and serves it for you; see [run Laya locally](#run-laya-locally). It reads only short inputs (512 tokens of state), so it suits the short checks and hands longer readings to the next source.
+
+**Jev-Style** is a family of small open decision models. The 0.8B v3 model reads up to 25,600 tokens, which suits the evidence-heavy checks. It ships as a Python library with no server, so it connects through the optional adapter in this repository; see [run Jev-Style locally](#run-jev-style-locally).
 
 With no configuration, vibecheck-jev uses hosted Jev with the key in `TYPESAFE_API_KEY`. Without any usable source, nothing breaks: the ledger records work as reported, like a plain ledger, and the hooks let work go ahead and print why on stderr.
 
@@ -64,7 +106,7 @@ Add the server to `sources` in the config file (see [the config file](#the-confi
 
 ```jsonc
 "sources": [
-  { "kind": "openjev", "id": "local-jev", "baseURL": "http://127.0.0.1:8000", "model": "jev" }
+  { "kind": "openjev", "id": "local-jev", "baseURL": "http://127.0.0.1:8000", "model": "jev-latest" }
 ]
 ```
 
@@ -79,7 +121,7 @@ vibecheck-jev measure fixtures --source local-jev --runs 3
 
 ### Hosted Jev
 
-Set your key in the environment the client starts from:
+Get an API key through the TypeSafe console (see [where to get a model](#where-to-get-a-model)), then set it in the environment the client starts from:
 
 ```bash
 export TYPESAFE_API_KEY="your key"
@@ -142,7 +184,7 @@ Example with a local server first and hosted Jev as the fallback:
 
 ```jsonc
 "sources": [
-  { "kind": "openjev", "id": "local-jev", "baseURL": "http://127.0.0.1:8000", "model": "jev" },
+  { "kind": "openjev", "id": "local-jev", "baseURL": "http://127.0.0.1:8000", "model": "jev-latest" },
   { "kind": "typesafe", "id": "typesafe" }
 ]
 ```
