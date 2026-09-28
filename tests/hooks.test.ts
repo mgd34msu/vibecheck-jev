@@ -11,11 +11,18 @@ import { detectClient } from "../src/cli.js";
 import { bashGuard, unguardedDelete } from "../src/jev/hooks/bash-guard.js";
 import type { HookDeps } from "../src/jev/hooks/io.js";
 import { preToolHook } from "../src/jev/hooks/pretool.js";
-import { MAX_BLOCKS, stopHook } from "../src/jev/hooks/stop.js";
+import { MAX_BLOCKS, sessionEndHook, stopHook } from "../src/jev/hooks/stop.js";
 import type { Judgment } from "../src/jev/judgment.js";
 import { ScriptedProvider, type Script } from "../src/jev/lib/index.js";
 import { queryEntries } from "../src/verification/store.js";
-import { CLAUDE_LINES, CODEX_LINES, writeTranscript } from "./jev-helpers.js";
+import {
+  CLAUDE_LINES,
+  CODEX_LINES,
+  MUSE_LINES,
+  MUSE_SESSION_ID,
+  writeMuseSession,
+  writeTranscript,
+} from "./jev-helpers.js";
 
 function judgmentOf(script: Script): {
   judgment: Judgment;
@@ -34,10 +41,17 @@ function judgmentOf(script: Script): {
   };
 }
 
+function museSessions(t: TestContext): string {
+  const sessions = mkdtempSync(join(tmpdir(), "vibecheck-jev-muse-sessions-"));
+  t.after(() => rmSync(sessions, { recursive: true, force: true }));
+  return sessions;
+}
+
 function deps(
   t: TestContext,
-  client: "claude" | "codex",
+  client: "claude" | "codex" | "muse",
   script: Script | undefined,
+  sessionsDir?: string,
 ) {
   const directory = mkdtempSync(join(tmpdir(), "vibecheck-jev-hooks-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -46,6 +60,9 @@ function deps(
   const value: HookDeps = {
     client,
     databasePath,
+    ...(client === "muse"
+      ? { sessionsDir: sessionsDir ?? museSessions(t) }
+      : {}),
     judgment: () =>
       opened?.judgment ?? {
         unusable: [{ sourceId: "typesafe", reason: "no API key" }],
@@ -119,6 +136,16 @@ const codexCommon = {
   permission_mode: "default",
 };
 
+const museCommon = {
+  session_id: MUSE_SESSION_ID,
+  turn_id: "turn-1",
+  cwd: "/nonexistent/work",
+  model: "model",
+  model_provider: "meta",
+  permission_mode: "default",
+  transcript_path: null,
+};
+
 test("the delete guard refuses deletes through unguarded variables and nothing else", () => {
   const refused = [
     "rm -rf $TARGET",
@@ -165,6 +192,8 @@ test("the client is read from the payload: Codex payloads carry turn_id", () => 
     "claude",
   );
   assert.equal(detectClient("not json", "codex"), "codex");
+  assert.equal(detectClient(JSON.stringify({ turn_id: "t" }), "muse"), "muse");
+  assert.equal(detectClient("not json", "muse"), "muse");
 });
 
 test("a Claude brief that narrows the plan is denied and the verdict lands in the ledger", async (t) => {
@@ -453,5 +482,189 @@ test("a stopping reply is judged against the session's open claims in the ledger
   assert.ok(
     grounded !== undefined &&
       has(grounded.state, "PASS tests/checkout.test.ts"),
+  );
+});
+
+test("a Muse spawn brief that narrows the plan is denied and the verdict lands in the ledger", async (t) => {
+  const seeded = writeMuseSession(t, MUSE_LINES);
+  const setup = deps(
+    t,
+    "muse",
+    (battery, question, state) =>
+      battery === "vibecheck.brief-scope" &&
+      question === "lowersBar" &&
+      has(state, "half")
+        ? 0.9
+        : 0.1,
+    seeded.sessionsDir,
+  );
+  await seedLedger(setup.databasePath, MUSE_SESSION_ID);
+  const result = await preToolHook(
+    JSON.stringify({
+      ...museCommon,
+      transcript_path: seeded.path,
+      hook_event_name: "PreToolUse",
+      tool_name: "subagent_spawn",
+      tool_use_id: "call_1",
+      tool_input: {
+        command_id: "csv",
+        objective: "Build the CSV export, but only half of the columns.",
+        role: "csv",
+      },
+    }),
+    setup.deps,
+  );
+  assert.equal(result.exitCode, 0);
+  const output = z
+    .object({
+      hookSpecificOutput: z.object({
+        permissionDecision: z.literal("deny"),
+        permissionDecisionReason: z.string(),
+      }),
+    })
+    .parse(JSON.parse(result.stdout ?? ""));
+  assert.match(
+    output.hookSpecificOutput.permissionDecisionReason,
+    /brief-scope/u,
+  );
+  const entries = await new Database(setup.databasePath).unscoped(
+    false,
+    (access) => queryEntries(access, { projectId: "shop" }),
+  );
+  assert.ok(
+    entries.some(
+      (entry) =>
+        entry.kind === "verdict" &&
+        entry.body.battery_id === "vibecheck.brief-scope" &&
+        entry.body.outcome === "failed",
+    ),
+  );
+});
+
+test("a Muse message to a worker is judged against the session log's requests", async (t) => {
+  const seeded = writeMuseSession(t, MUSE_LINES);
+  const setup = deps(t, "muse", () => 0.1, seeded.sessionsDir);
+  const result = await preToolHook(
+    JSON.stringify({
+      ...museCommon,
+      hook_event_name: "PreToolUse",
+      tool_name: "subagent_send_message",
+      tool_use_id: "call_2",
+      tool_input: {
+        subagent_id: "sub-1",
+        message: "Fix the failing checkout test and run the suite.",
+      },
+    }),
+    setup.deps,
+  );
+  assert.deepEqual(result, { exitCode: 0 });
+  const brief = setup.provider?.requests.find(
+    (entry) => entry.batteryId === "vibecheck.brief-scope",
+  );
+  assert.ok(
+    brief !== undefined &&
+      has(brief.state, "Add a CSV export to the reports page."),
+    "the session log's requests stand in without a ledger project",
+  );
+});
+
+test("a Muse shell delete through an unguarded variable is refused", () => {
+  const denied = bashGuard(
+    JSON.stringify({
+      ...museCommon,
+      hook_event_name: "PreToolUse",
+      tool_name: "bash",
+      tool_use_id: "call_3",
+      tool_input: {
+        command: "rm -rf $X",
+        description: "clean",
+        workdir: "/tmp",
+      },
+    }),
+  );
+  assert.match(denied.stdout ?? "", /"permissionDecision":"deny"/u);
+  const allowed = bashGuard(
+    JSON.stringify({
+      ...museCommon,
+      hook_event_name: "PreToolUse",
+      tool_name: "read_file",
+      tool_use_id: "call_4",
+      tool_input: { path: "/tmp/x" },
+    }),
+  );
+  assert.deepEqual(allowed, { exitCode: 0 });
+});
+
+test("a Muse subagent reply stating what the tools did not show is blocked by name", async (t) => {
+  const seeded = writeMuseSession(t, MUSE_LINES);
+  const setup = deps(
+    t,
+    "muse",
+    (battery, question, state) =>
+      battery === "vibecheck.claim-grounded" &&
+      question === "ungrounded" &&
+      has(state, "CSV export is in")
+        ? 0.9
+        : 0.1,
+    seeded.sessionsDir,
+  );
+  const result = await stopHook(
+    JSON.stringify({
+      ...museCommon,
+      hook_event_name: "SubagentStop",
+      stop_hook_active: false,
+      child_session_id: MUSE_SESSION_ID,
+      subagent_id: "sub-1",
+    }),
+    setup.deps,
+  );
+  const output = z
+    .object({ decision: z.literal("block"), reason: z.string() })
+    .parse(JSON.parse(result.stdout ?? ""));
+  assert.match(
+    output.reason,
+    /"The CSV export is in src\/reports\/csv\.ts\." \(0\.90\)/u,
+  );
+});
+
+test("a Muse session end records the verdict without holding the reply", async (t) => {
+  const seeded = writeMuseSession(t, MUSE_LINES);
+  const setup = deps(
+    t,
+    "muse",
+    (battery, question, state) =>
+      battery === "vibecheck.claim-grounded" &&
+      question === "ungrounded" &&
+      has(state, "CSV export is in")
+        ? 0.9
+        : 0.1,
+    seeded.sessionsDir,
+  );
+  const result = await sessionEndHook(
+    JSON.stringify({
+      session_id: MUSE_SESSION_ID,
+      cwd: "/nonexistent/work",
+      transcript_path: null,
+      hook_event_name: "SessionEnd",
+      model: "model",
+      model_provider: "meta",
+      permission_mode: "default",
+      reason: "other",
+    }),
+    setup.deps,
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, undefined);
+  assert.match(result.stderr ?? "", /not held/u);
+  const entries = await new Database(setup.databasePath).unscoped(
+    false,
+    (access) => queryEntries(access, {}),
+  );
+  assert.ok(
+    entries.some(
+      (entry) =>
+        entry.kind === "verdict" &&
+        entry.body.battery_id === "vibecheck.claim-grounded",
+    ),
   );
 });

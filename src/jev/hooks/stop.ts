@@ -10,6 +10,7 @@
 // checked. Blocks per user message are capped, counted from ledger history,
 // so a reading that keeps disagreeing cannot hold the turn open forever.
 
+import { z } from "zod";
 import { Database } from "../../db.js";
 import {
   asksPermissionBattery,
@@ -26,7 +27,6 @@ import { resolveContext, type LedgerContext } from "../project.js";
 import { authorizationsText, exceptionsText, taskText } from "../standard.js";
 import {
   joinEvidence,
-  readTranscript,
   recentRequests,
   replySentences,
   type TranscriptView,
@@ -41,6 +41,7 @@ import {
   blockStop,
   failOpen,
   parsePayload,
+  readHookTranscript,
   recordEntries,
   stopPayloadSchema,
   type HookDeps,
@@ -99,16 +100,14 @@ export async function stopHook(
   const payload = parsePayload(stopPayloadSchema, stdin);
   if (typeof payload === "string")
     return failOpen(deps.client, "Stop", payload);
-  const view: TranscriptView | undefined =
-    typeof payload.transcript_path === "string"
-      ? readTranscript(payload.transcript_path, deps.client)
-      : undefined;
+  const view: TranscriptView | undefined = readHookTranscript(deps, payload);
   const latest = view?.userMessages.at(-1);
   const reply = view?.lastReply ?? payload.last_assistant_message ?? undefined;
   if (latest === undefined || reply === undefined || reply.trim().length === 0)
     return allow(deps.client, "Stop");
   const userMessages = view?.userMessages ?? [];
-  const sessionKey = payload.session_id ?? "unknown";
+  const sessionKey =
+    payload.session_id ?? payload.child_session_id ?? "unknown";
   const database = new Database(deps.databasePath);
   if (
     (await blocksSoFar(database, sessionKey, userMessages.length)) >= MAX_BLOCKS
@@ -123,9 +122,7 @@ export async function stopHook(
       `no judgment source is usable (${judgment.unusable.map((skip) => `${skip.sourceId}: ${skip.reason}`).join("; ")}); the reply was not checked`,
     );
   const context = await resolveContext(database, {
-    ...(payload.session_id === undefined
-      ? {}
-      : { sessionId: payload.session_id }),
+    ...(sessionKey === "unknown" ? {} : { sessionId: sessionKey }),
     ...(payload.cwd === undefined ? {} : { cwd: payload.cwd }),
   });
   return checkReply(deps, judgment, context, {
@@ -139,8 +136,40 @@ export async function stopHook(
     transcriptRef:
       typeof payload.transcript_path === "string"
         ? payload.transcript_path
-        : "last_assistant_message",
+        : deps.client === "muse"
+          ? sessionKey
+          : "last_assistant_message",
   });
+}
+
+const blockedSchema = z.looseObject({
+  decision: z.string(),
+  reason: z.string(),
+});
+
+/**
+ * The SessionEnd hook: the stop checks run and the verdicts land in the
+ * ledger, but the session is ending so a block becomes an advisory note.
+ */
+export async function sessionEndHook(
+  stdin: string,
+  deps: HookDeps,
+): Promise<HookResult> {
+  const result = await stopHook(stdin, deps);
+  if (result.stdout === undefined) return result;
+  let decision: unknown;
+  try {
+    decision = JSON.parse(result.stdout);
+  } catch {
+    return result;
+  }
+  const blocked = blockedSchema.safeParse(decision);
+  if (!blocked.success || blocked.data.decision !== "block") return result;
+  const notes = result.stderr ?? "";
+  return {
+    exitCode: 0,
+    stderr: `${blocked.data.reason} Recorded in the ledger; the session is ending, so the reply was not held.\n${notes}`,
+  };
 }
 
 interface ReplyInput {

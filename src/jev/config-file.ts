@@ -51,7 +51,7 @@ export function configTemplate(): string {
         `    // ${purpose ?? ""}\n    "${id ?? ""}": { "enabled": true }`,
     )
     .join(",\n");
-  return `// vibecheck-jev configuration, shared by the Claude Code and Codex installs.
+  return `// vibecheck-jev configuration, shared by the Claude Code, Codex, and Muse installs.
 // Written on first run with every option at its default. Edit freely; the
 // file is never overwritten. \`vibecheck-jev config init --force\` rewrites it
 // after saving the old one next to it.

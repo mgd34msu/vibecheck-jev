@@ -10,13 +10,21 @@
 // assistant, tool calls as function_call or custom_tool_call items and their
 // results as the matching *_output items. Lines that do not parse are skipped.
 //
+// Muse writes session.jsonl envelopes `{ payload: { kind, event } }`, some
+// grouped in transaction frames whose children carry `record_json` strings.
+// User input arrives as `started` prompts, replies as
+// `assistant_message_committed` texts, tool calls as
+// `assistant_tool_calls_committed` entries with JSON args and their results
+// as `tool_result_batch_committed` texts.
+//
 // Recognizing harness-inserted text (reminders, notices, injected context)
 // matches the fixed markers each client writes; it does not read prose.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 
-export type Client = "claude" | "codex";
+export type Client = "claude" | "codex" | "muse";
 export type TurnTrigger = "user" | "notification";
 
 export interface TranscriptView {
@@ -67,6 +75,15 @@ class ViewBuilder {
   resetReply(): void {
     this.lastReply = undefined;
     this.finalText = undefined;
+  }
+
+  /** A display form replaces the prompt it renders. */
+  replaceLastUser(text: string): void {
+    if (this.userMessages.length === 0) {
+      this.user(text);
+      return;
+    }
+    this.userMessages[this.userMessages.length - 1] = text;
   }
 
   reply(text: string): void {
@@ -463,10 +480,235 @@ export function isSealed(text: string): boolean {
   return /^gAAAAA[A-Za-z0-9_-]+=*$/u.test(text.trim());
 }
 
+// ---------------------------------------------------------------------------
+// Muse
+// ---------------------------------------------------------------------------
+
+const museRecordSchema = z.looseObject({
+  children: z.array(z.unknown()).optional(),
+  payload: z.unknown().optional(),
+});
+const museChildSchema = z.looseObject({ record_json: z.string() });
+const musePayloadSchema = z.looseObject({ event: z.unknown().optional() });
+const museEventSchema = z.looseObject({
+  kind: z.string(),
+  prompt: z.string().optional(),
+  text: z.string().optional(),
+  body: z.unknown().optional(),
+  payload: z.unknown().optional(),
+  source: z.unknown().optional(),
+  lifecycle: z.string().optional(),
+  tool_calls: z.unknown().optional(),
+  results: z.unknown().optional(),
+});
+type MuseEvent = z.infer<typeof museEventSchema>;
+const museToolCallSchema = z.looseObject({
+  name: z.string().optional(),
+  args: z.string().optional(),
+});
+const museToolResultSchema = z.looseObject({ text: z.string().optional() });
+const museInboxSourceSchema = z.looseObject({ source: z.string().optional() });
+const museInboxPayloadSchema = z.looseObject({ prompt: z.string().optional() });
+const museBashArgsSchema = z.looseObject({
+  command: z.string().optional(),
+  description: z.string().optional(),
+});
+const museSpawnArgsSchema = z.looseObject({
+  objective: z.string().optional(),
+});
+
+/** Every record a Muse session log line holds: the line itself, plus the records a transaction frame carries. */
+function museRecords(value: unknown): unknown[] {
+  const parsed = museRecordSchema.safeParse(value);
+  if (!parsed.success) return [];
+  const records: unknown[] = [value];
+  for (const child of parsed.data.children ?? []) {
+    const inner = museChildSchema.safeParse(child);
+    if (!inner.success) continue;
+    try {
+      records.push(JSON.parse(inner.data.record_json));
+    } catch {
+      // a partial child while the client is still writing
+    }
+  }
+  return records;
+}
+
+function museEventOf(record: unknown): MuseEvent | undefined {
+  const parsed = museRecordSchema.safeParse(record);
+  if (!parsed.success) return undefined;
+  const payload = musePayloadSchema.safeParse(parsed.data.payload);
+  if (!payload.success) return undefined;
+  const event = museEventSchema.safeParse(payload.data.event);
+  return event.success ? event.data : undefined;
+}
+
+/** A queued delivery's text: the prompt it carries, or the body when it carries none. */
+function museInboxText(event: MuseEvent): string | undefined {
+  const nested = museInboxPayloadSchema.safeParse(event.payload);
+  if (nested.success && nested.data.prompt !== undefined)
+    return nested.data.prompt;
+  return typeof event.body === "string" ? event.body : undefined;
+}
+
+function museInboxSource(event: MuseEvent): string | undefined {
+  const parsed = museInboxSourceSchema.safeParse(event.source);
+  return parsed.success ? parsed.data.source : undefined;
+}
+
+/** Commands and instructions an assistant entry sent: what its claims about running work rest on. */
+function museToolCalls(event: MuseEvent): string[] {
+  if (!Array.isArray(event.tool_calls)) return [];
+  const calls: string[] = [];
+  for (const item of event.tool_calls) {
+    const parsed = museToolCallSchema.safeParse(item);
+    if (!parsed.success || parsed.data.args === undefined) continue;
+    let args: unknown;
+    try {
+      args = JSON.parse(parsed.data.args);
+    } catch {
+      continue;
+    }
+    if (parsed.data.name === "bash") {
+      const bash = museBashArgsSchema.safeParse(args);
+      if (bash.success && bash.data.command !== undefined)
+        calls.push(commandText(bash.data.command, bash.data.description));
+    } else if (parsed.data.name === "subagent_spawn") {
+      const spawn = museSpawnArgsSchema.safeParse(args);
+      if (spawn.success && spawn.data.objective !== undefined)
+        calls.push(
+          `Instruction sent by subagent_spawn: ${spawn.data.objective}`,
+        );
+    }
+  }
+  return calls;
+}
+
+function museToolResults(event: MuseEvent): string[] {
+  if (!Array.isArray(event.results)) return [];
+  const texts: string[] = [];
+  for (const item of event.results) {
+    const parsed = museToolResultSchema.safeParse(item);
+    if (
+      parsed.success &&
+      parsed.data.text !== undefined &&
+      parsed.data.text.length > 0
+    )
+      texts.push(parsed.data.text);
+  }
+  return texts;
+}
+
+function readMuseEvent(view: ViewBuilder, event: MuseEvent): void {
+  switch (event.kind) {
+    case "started": {
+      if (event.prompt !== undefined) view.user(event.prompt);
+      break;
+    }
+    case "user_prompt_display": {
+      if (event.text !== undefined) view.replaceLastUser(event.text);
+      break;
+    }
+    case "inbox_item_queued": {
+      const text = museInboxText(event);
+      if (text === undefined) break;
+      if (museInboxSource(event) === "user_steer") view.user(text);
+      else view.notice(text);
+      break;
+    }
+    case "assistant_message_committed": {
+      if (event.text !== undefined) view.reply(event.text);
+      break;
+    }
+    case "assistant_tool_calls_committed": {
+      for (const call of museToolCalls(event)) view.toolCall(call);
+      break;
+    }
+    case "tool_result_batch_committed": {
+      for (const result of museToolResults(event)) view.toolResult(result);
+      break;
+    }
+    case "context_block_updated": {
+      if (event.lifecycle === "subagent_stop") view.resetReply();
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+export function readMuseTranscript(path: string): TranscriptView {
+  const view = new ViewBuilder();
+  for (const value of lines(path)) {
+    for (const record of museRecords(value)) {
+      const event = museEventOf(record);
+      if (event !== undefined) readMuseEvent(view, event);
+    }
+  }
+  return view.build();
+}
+
+function readDir(directory: string): string[] {
+  try {
+    return readdirSync(directory);
+  } catch {
+    return [];
+  }
+}
+
+/** The session log in one day folder: the session's own, or a child's beside its parent. */
+function museLogIn(dayDir: string, sessionId: string): string | undefined {
+  const direct = join(dayDir, sessionId, "session.jsonl");
+  if (existsSync(direct)) return direct;
+  for (const name of readDir(dayDir)) {
+    const child = join(dayDir, name, "subagent", sessionId, "session.jsonl");
+    if (existsSync(child)) return child;
+  }
+  return undefined;
+}
+
+/** A Muse session id carries its creation time, so its log usually sits in that local day's folder. */
+function museLogDay(sessionId: string): string | undefined {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
+      sessionId,
+    )
+  )
+    return undefined;
+  const created = new Date(
+    Number.parseInt(sessionId.slice(0, 8) + sessionId.slice(9, 13), 16),
+  );
+  if (Number.isNaN(created.getTime())) return undefined;
+  const day = (value: number): string => String(value).padStart(2, "0");
+  return `${created.getFullYear()}/${day(created.getMonth() + 1)}/${day(created.getDate())}`;
+}
+
+/** The session log for a Muse session id: the day's folder first, then the whole store. */
+export function findMuseSessionLog(
+  sessionsDir: string,
+  sessionId: string,
+): string | undefined {
+  const day = museLogDay(sessionId);
+  if (day !== undefined) {
+    const found = museLogIn(join(sessionsDir, day), sessionId);
+    if (found !== undefined) return found;
+  }
+  for (const year of readDir(sessionsDir))
+    for (const month of readDir(join(sessionsDir, year)))
+      for (const dayName of readDir(join(sessionsDir, year, month))) {
+        const found = museLogIn(
+          join(sessionsDir, year, month, dayName),
+          sessionId,
+        );
+        if (found !== undefined) return found;
+      }
+  return undefined;
+}
+
 export function readTranscript(path: string, client: Client): TranscriptView {
-  return client === "codex"
-    ? readCodexTranscript(path)
-    : readClaudeTranscript(path);
+  if (client === "codex") return readCodexTranscript(path);
+  if (client === "muse") return readMuseTranscript(path);
+  return readClaudeTranscript(path);
 }
 
 /** The user's standing request: the last few messages together, since an instruction is often followed by short corrections. */

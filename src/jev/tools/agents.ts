@@ -1,5 +1,5 @@
-// watch-agents --project ID [--session SESSION-ID] [--client claude|codex]
-// watch-agents --transcript FILE [--transcript FILE...] [--client claude|codex]
+// watch-agents --project ID [--session SESSION-ID] [--client claude|codex|muse]
+// watch-agents --transcript FILE [--transcript FILE...] [--client claude|codex|muse]
 //   Reads what running agents wrote since the last look and flags a message
 //   that abandons an item with work left (gives-up). The agents are the
 //   descendant sessions of SESSION-ID in the ledger (the coordinator when
@@ -16,8 +16,9 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { z } from "zod";
+import { museSessionsDir } from "../../paths.js";
 import type { SessionRecord, WorkRecord } from "../../schemas.js";
 import {
   appendEntry,
@@ -42,7 +43,7 @@ import {
 
 const MAX_DEPTH = 6;
 
-/** Transcript files whose names carry a session or agent id, under the clients' session folders. */
+/** Transcript files for a session or agent id, under the clients' session folders. Muse names the folder, not the file. */
 export function findTranscripts(
   id: string,
   roots: readonly string[],
@@ -69,7 +70,8 @@ export function findTranscripts(
         name.endsWith(".jsonl") &&
         (name === `${id}.jsonl` ||
           name === `agent-${id}.jsonl` ||
-          name.endsWith(`-${id}.jsonl`))
+          name.endsWith(`-${id}.jsonl`) ||
+          (name === "session.jsonl" && basename(directory) === id))
       )
         found.push(path);
     }
@@ -83,6 +85,7 @@ function defaultRoots(io: ToolIO): string[] {
   return [
     join(io.env["CLAUDE_CONFIG_DIR"] ?? join(home, ".claude"), "projects"),
     join(io.env["CODEX_HOME"] ?? join(home, ".codex"), "sessions"),
+    museSessionsDir(io.env),
   ];
 }
 
@@ -100,8 +103,16 @@ const lineSchema = z.looseObject({
 const textPartsSchema = z.array(
   z.looseObject({ type: z.string().optional(), text: z.string().optional() }),
 );
+const museReplySchema = z.looseObject({
+  payload: z.looseObject({
+    event: z.looseObject({
+      kind: z.string(),
+      text: z.string().optional(),
+    }),
+  }),
+});
 
-/** The agent's reply texts with their line numbers, from either client's transcript. */
+/** The agent's reply texts with their line numbers, from any client's transcript. */
 export function replyTexts(path: string): { line: number; text: string }[] {
   const texts: { line: number; text: string }[] = [];
   readFileSync(path, "utf8")
@@ -112,6 +123,16 @@ export function replyTexts(path: string): { line: number; text: string }[] {
       try {
         value = JSON.parse(raw);
       } catch {
+        return;
+      }
+      const muse = museReplySchema.safeParse(value);
+      if (
+        muse.success &&
+        muse.data.payload.event.kind === "assistant_message_committed" &&
+        muse.data.payload.event.text !== undefined
+      ) {
+        const text = muse.data.payload.event.text.trim();
+        if (text.length > 0) texts.push({ line: index + 1, text });
         return;
       }
       const line = lineSchema.safeParse(value);

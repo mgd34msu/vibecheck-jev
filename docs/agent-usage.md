@@ -1,6 +1,6 @@
 # Agent instructions
 
-The block below tells agents how to use vibecheck-jev in a project. Add it to the instructions file your agents read for that project (for example `AGENTS.md` for Codex or `CLAUDE.md` for Claude Code). Install the plugin first, then give the agents the shared project ID and repository identity in the task context.
+The block below tells agents how to use vibecheck-jev in a project. Add it to the instructions file your agents read for that project (for example `AGENTS.md` for Codex and Muse, or `CLAUDE.md` for Claude Code). Install the plugin first, then give the agents the shared project ID and repository identity in the task context.
 
 ```markdown
 ## Shared work ledger (vibecheck-jev)

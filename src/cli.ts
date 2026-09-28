@@ -17,10 +17,11 @@ import {
   allow,
   failOpen,
   type HookDeps,
+  type HookEvent,
   type HookResult,
 } from "./jev/hooks/io.js";
 import { preToolHook } from "./jev/hooks/pretool.js";
-import { stopHook } from "./jev/hooks/stop.js";
+import { sessionEndHook, stopHook } from "./jev/hooks/stop.js";
 import { isJudgment, openJudgment } from "./jev/judgment.js";
 import { layaCommand } from "./jev/laya.js";
 import {
@@ -34,7 +35,12 @@ import { labelCommand } from "./jev/tools/label.js";
 import { fixturesCommand, measureCommand } from "./jev/tools/measure.js";
 import { sourcesCommand } from "./jev/tools/sources.js";
 import type { Client } from "./jev/transcript.js";
-import { defaultDatabase, expandHome, type Environment } from "./paths.js";
+import {
+  defaultDatabase,
+  expandHome,
+  museSessionsDir,
+  type Environment,
+} from "./paths.js";
 import { identifierSchema } from "./schemas.js";
 import { createHttpApp, createServer } from "./server.js";
 import { LedgerVerifier } from "./verification/ledger.js";
@@ -154,7 +160,7 @@ Usage: vibecheck-jev [options]            run the MCP ledger server
   --help                             Print this help
 
 Commands:
-  hook pretool|bash-guard|stop --client claude|codex   run a hook (reads stdin)
+  hook pretool|bash-guard|stop|session-end --client claude|codex|muse   run a hook (reads stdin)
   measure fixtures [--runs N] [--source ID] [--battery ID]
   measure live [--project ID]
   measure replay [CHECK-ID] [--project ID] [--source ID]
@@ -182,7 +188,7 @@ function toolIO(environment: Environment, config?: Config): ToolIO {
   };
 }
 
-const HOOKS = new Set(["pretool", "bash-guard", "stop"]);
+const HOOKS = new Set(["pretool", "bash-guard", "stop", "session-end"]);
 
 /** Runs one hook over its stdin. A bad config or an overrun deadline fails open. */
 export async function runHook(
@@ -191,7 +197,14 @@ export async function runHook(
   stdin: string,
   environment: Environment,
 ): Promise<HookResult> {
-  const event = name === "stop" ? "Stop" : "PreToolUse";
+  const event: HookEvent =
+    name === "stop"
+      ? client === "muse"
+        ? "SubagentStop"
+        : "Stop"
+      : name === "session-end"
+        ? "SessionEnd"
+        : "PreToolUse";
   let config: Config;
   try {
     config = loadConfig(environment);
@@ -208,16 +221,18 @@ export async function runHook(
       : bashGuard(stdin);
   if (
     (name === "pretool" && config.hooks?.briefCheck === false) ||
-    (name === "stop" && config.hooks?.stop === false)
+    ((name === "stop" || name === "session-end") &&
+      config.hooks?.stop === false)
   )
     return allow(client, event);
   const deps: HookDeps = {
     client,
     databasePath: defaultDatabase(environment, config.data ?? {}),
+    sessionsDir: museSessionsDir(environment),
     judgment: () => openJudgment(config, { environment, autostart: true }),
   };
   const seconds =
-    name === "stop"
+    name === "stop" || name === "session-end"
       ? (config.hooks?.stopSeconds ?? DEFAULT_HOOK_SECONDS.stop)
       : (config.hooks?.briefCheckSeconds ?? DEFAULT_HOOK_SECONDS.briefCheck);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -236,7 +251,11 @@ export async function runHook(
   });
   try {
     const work =
-      name === "stop" ? stopHook(stdin, deps) : preToolHook(stdin, deps);
+      name === "stop"
+        ? stopHook(stdin, deps)
+        : name === "session-end"
+          ? sessionEndHook(stdin, deps)
+          : preToolHook(stdin, deps);
     return await Promise.race([work, deadline]);
   } catch (error) {
     return failOpen(
@@ -249,8 +268,13 @@ export async function runHook(
   }
 }
 
-/** Codex payloads carry `turn_id`; Claude Code's do not. The flag names the client when the payload is ambiguous. */
+/**
+ * Codex payloads carry `turn_id`; Claude Code's do not. Muse payloads carry
+ * it too, so an explicit Muse flag wins and the payload only separates Codex
+ * from Claude Code.
+ */
 export function detectClient(stdin: string, flag: Client): Client {
+  if (flag === "muse") return "muse";
   try {
     const value: unknown = JSON.parse(stdin);
     if (typeof value === "object" && value !== null && "turn_id" in value)
@@ -299,15 +323,20 @@ export async function runCommand(
       options: { client: { type: "string", default: "claude" } },
     });
     const name = positionals[0];
-    const stdin = await readStdin();
-    const client = detectClient(
-      stdin,
-      values.client === "codex" ? "codex" : "claude",
-    );
-    if (name === undefined || !HOOKS.has(name))
+    const flag =
+      values.client === "codex"
+        ? "codex"
+        : values.client === "muse"
+          ? "muse"
+          : values.client === "claude"
+            ? "claude"
+            : undefined;
+    if (name === undefined || !HOOKS.has(name) || flag === undefined)
       throw new CliUsageError(
-        "usage: hook pretool|bash-guard|stop --client claude|codex",
+        "usage: hook pretool|bash-guard|stop|session-end --client claude|codex|muse",
       );
+    const stdin = await readStdin();
+    const client = detectClient(stdin, flag);
     ensureConfig(environment);
     const result = await runHook(name, client, stdin, environment);
     if (result.stdout !== undefined) process.stdout.write(result.stdout);

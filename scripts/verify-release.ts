@@ -6,11 +6,12 @@ import {
   readdir,
   rm,
   chmod,
+  cp,
   lstat,
   writeFile,
 } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import {
@@ -28,6 +29,7 @@ import {
   generateNotices,
   hookFile,
   LAUNCHER,
+  MUSE_HOOKS,
   packageVersion,
   platforms,
   pluginFiles,
@@ -81,14 +83,101 @@ const hooksSchema = z.object({
     ),
   ),
 });
+const museHookSchema = z.object({
+  id: z.string(),
+  event: z.string(),
+  command: z.array(z.string()),
+  timeoutMs: z.number().int().positive(),
+});
+const museManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  name: z.literal(PRODUCT),
+  version: z.string(),
+  capabilities: z.object({
+    skills: z.tuple([
+      z.object({
+        id: z.literal(PRODUCT),
+        path: z.literal("skills/vibecheck-jev/SKILL.md"),
+      }),
+    ]),
+    hooks: z.tuple([
+      museHookSchema,
+      museHookSchema,
+      museHookSchema,
+      museHookSchema,
+    ]),
+    mcpServers: z.tuple([
+      z.object({
+        id: z.literal(PRODUCT),
+        transport: z.literal("stdio"),
+        command: z.tuple([
+          z.literal("bash"),
+          z.literal(LAUNCHER),
+          z.literal("--transport"),
+          z.literal("stdio"),
+        ]),
+      }),
+    ]),
+  }),
+});
 
 async function json(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
+async function verifyMuseManifest(
+  directory: string,
+  version: string,
+): Promise<void> {
+  const manifest = museManifestSchema.parse(
+    await json(join(directory, ".muse-plugin/plugin.json")),
+  );
+  assert.equal(manifest.version, version);
+  assert.deepEqual(
+    manifest.capabilities.hooks.map((hook) => [
+      hook.id,
+      hook.event,
+      hook.command,
+    ]),
+    [
+      ["pretool", "PreToolUse", ["bash", "hooks/muse-pretool.sh"]],
+      ["bash-guard", "PreToolUse", ["bash", "hooks/muse-bash-guard.sh"]],
+      [
+        "subagent-stop",
+        "SubagentStop",
+        ["bash", "hooks/muse-subagent-stop.sh"],
+      ],
+      ["session-end", "SessionEnd", ["bash", "hooks/muse-session-end.sh"]],
+    ],
+  );
+  assert.deepEqual([...MUSE_HOOKS].sort(), [
+    "hooks/muse-bash-guard.sh",
+    "hooks/muse-pretool.sh",
+    "hooks/muse-session-end.sh",
+    "hooks/muse-subagent-stop.sh",
+  ]);
+  const wrappers: [string, string][] = [
+    ["hooks/muse-pretool.sh", "pretool"],
+    ["hooks/muse-bash-guard.sh", "bash-guard"],
+    ["hooks/muse-subagent-stop.sh", "stop"],
+    ["hooks/muse-session-end.sh", "session-end"],
+  ];
+  for (const [wrapper, hook] of wrappers) {
+    const script = await readFile(join(directory, wrapper), "utf8");
+    assert.ok(
+      script.includes(`/${LAUNCHER}" hook ${hook} --client muse`),
+      `${wrapper} runs ${hook} through the launcher`,
+    );
+  }
+}
+
 export async function verifyVersions(directory: string): Promise<string> {
   const version = await packageVersion(directory);
   for (const platform of platforms) {
+    if (platform === "muse") {
+      await verifyMuseManifest(directory, version);
+      continue;
+    }
     const manifest = manifestSchema.parse(
       await json(join(directory, `.${platform}-plugin/plugin.json`)),
     );
@@ -123,13 +212,13 @@ export async function verifyVersions(directory: string): Promise<string> {
       manifest.mcpServers["vibecheck-jev"].cwd,
       platform === "codex" ? "." : undefined,
     );
+    const hooksPath = hookFile(platform);
+    assert.ok(typeof hooksPath === "string");
     assert.equal(
       manifest.hooks,
-      platform === "codex" ? `./${hookFile("codex")}` : undefined,
+      platform === "codex" ? `./${hooksPath}` : undefined,
     );
-    const hooks = hooksSchema.parse(
-      await json(join(directory, hookFile(platform))),
-    );
+    const hooks = hooksSchema.parse(await json(join(directory, hooksPath)));
     const root =
       platform === "codex" ? "$PLUGIN_ROOT" : "${CLAUDE_PLUGIN_ROOT}";
     for (const [event, groups] of Object.entries(hooks.hooks))
@@ -159,29 +248,45 @@ export async function exercisePlugin(
   workingDirectory: string,
   expectedVersion: string,
 ): Promise<void> {
-  const manifest = manifestSchema.parse(
-    await json(join(directory, `.${platform}-plugin/plugin.json`)),
-  );
-  const server = manifest.mcpServers["vibecheck-jev"];
-  const arguments_ = server.args.map((value) =>
-    value.replaceAll("${CLAUDE_PLUGIN_ROOT}", directory),
-  );
-  assert.ok(
-    arguments_.every((value) => !value.includes("${")),
-    "Unresolved plugin variable",
-  );
+  let command: string;
+  let arguments_: string[];
+  let cwd: string;
+  if (platform === "muse") {
+    const manifest = museManifestSchema.parse(
+      await json(join(directory, ".muse-plugin/plugin.json")),
+    );
+    const [entry, script, ...flags] =
+      manifest.capabilities.mcpServers[0].command;
+    command = entry;
+    arguments_ = [resolve(directory, script), ...flags];
+    cwd = workingDirectory;
+  } else {
+    const manifest = manifestSchema.parse(
+      await json(join(directory, `.${platform}-plugin/plugin.json`)),
+    );
+    const server = manifest.mcpServers["vibecheck-jev"];
+    arguments_ = server.args.map((value) =>
+      value.replaceAll("${CLAUDE_PLUGIN_ROOT}", directory),
+    );
+    assert.ok(
+      arguments_.every((value) => !value.includes("${")),
+      "Unresolved plugin variable",
+    );
+    command = server.command;
+    cwd =
+      platform === "codex"
+        ? resolve(directory, server.cwd ?? ".")
+        : workingDirectory;
+  }
   const client = new Client({
     name: "vibecheck-jev-release-verifier",
     version: "1.0.0",
   });
   const configHome = await mkdtemp(join(tmpdir(), "vibecheck-jev-config-"));
   const transport = new StdioClientTransport({
-    command: server.command,
+    command,
     args: [...arguments_, "--database", database],
-    cwd:
-      platform === "codex"
-        ? resolve(directory, server.cwd ?? ".")
-        : workingDirectory,
+    cwd,
     env: {
       ...getDefaultEnvironment(),
       VIBECHECK_JEV_RUNTIME: runtime,
@@ -323,18 +428,23 @@ export function exerciseHooks(
       tmpdir(),
       `vibecheck-jev-hook-config-${process.pid}-${platform}-${runtime}`,
     ),
+    XDG_DATA_HOME: join(
+      tmpdir(),
+      `vibecheck-jev-hook-data-${process.pid}-${platform}-${runtime}`,
+    ),
   };
   const common = {
     session_id: "release-hook-session",
     cwd: tmpdir(),
     transcript_path: null,
-    ...(platform === "codex"
-      ? {
+    ...(platform === "claude"
+      ? {}
+      : {
           turn_id: "release-turn",
           model: "release-model",
           permission_mode: "default",
-        }
-      : {}),
+          ...(platform === "muse" ? { model_provider: "meta" } : {}),
+        }),
   };
   const hook = (name: string, payload: object) =>
     spawnSync(
@@ -363,15 +473,42 @@ export function exerciseHooks(
   });
   assert.equal(allowed.status, 0, allowed.stderr);
   assert.equal(allowed.stdout, "");
-  const stop = hook("stop", {
-    ...common,
-    hook_event_name: "Stop",
-    stop_hook_active: false,
-    last_assistant_message: "Done.",
-  });
+  const stop = hook(
+    "stop",
+    platform === "muse"
+      ? {
+          ...common,
+          hook_event_name: "SubagentStop",
+          stop_hook_active: false,
+          last_assistant_message: "Done.",
+          child_session_id: "release-hook-session",
+          subagent_id: "release-subagent",
+        }
+      : {
+          ...common,
+          hook_event_name: "Stop",
+          stop_hook_active: false,
+          last_assistant_message: "Done.",
+        },
+  );
   assert.notEqual(stop.status, 2, stop.stderr);
   assert.doesNotMatch(stop.stdout, /"decision":"block"/u);
+  if (platform === "muse") {
+    const ended = hook("session-end", {
+      session_id: "release-hook-session",
+      cwd: tmpdir(),
+      transcript_path: null,
+      hook_event_name: "SessionEnd",
+      model: "release-model",
+      model_provider: "meta",
+      permission_mode: "default",
+      reason: "other",
+    });
+    assert.notEqual(ended.status, 2, ended.stderr);
+    assert.doesNotMatch(ended.stdout, /"decision":"block"/u);
+  }
   rmSync(environment.XDG_CONFIG_HOME, { recursive: true, force: true });
+  rmSync(environment.XDG_DATA_HOME, { recursive: true, force: true });
 }
 
 function inventory(output: string, expected: string[]): void {
@@ -458,6 +595,25 @@ export async function verifyNativeInstall(
     await mkdir(isolated, { recursive: true });
     arguments_.push("--bind", isolated, join(homedir(), name));
   }
+  for (const relative of [".local/share/muse", ".config/muse"]) {
+    const isolated = join(sandbox, relative);
+    await mkdir(isolated, { recursive: true });
+    if (relative === ".local/share/muse") {
+      // Muse disables plugins without its feature and model caches, which
+      // it cannot fetch inside the sandbox, so seed them. No plugin state
+      // comes along: the install starts from an empty store.
+      for (const seed of ["feature-config", "model-catalog"]) {
+        try {
+          await cp(join(homedir(), relative, seed), join(isolated, seed), {
+            recursive: true,
+          });
+        } catch {
+          // a fresh machine has no cache to seed
+        }
+      }
+    }
+    arguments_.push("--bind", isolated, join(homedir(), relative));
+  }
   const userFile = join(sandbox, ".claude.json");
   await writeFile(userFile, "{}\n");
   arguments_.push(
@@ -467,57 +623,102 @@ export async function verifyNativeInstall(
     "--chdir",
     temporary,
   );
-  if (platform === "codex") {
-    run("bwrap", [
-      ...arguments_,
-      "codex",
-      "plugin",
-      "marketplace",
-      "add",
-      directory,
-    ]);
-    run("bwrap", [
-      ...arguments_,
-      "codex",
-      "plugin",
-      "add",
-      `${PRODUCT}@${PRODUCT}`,
-    ]);
-    assert.match(
-      run("bwrap", [...arguments_, "codex", "plugin", "list"]),
-      /vibecheck-jev/u,
-    );
+  let cached: string;
+  let installedVersion: string;
+  if (platform === "muse") {
+    // Muse refuses directories with symlinks, so the native install runs
+    // from a clean staging of the shipped files, like an extracted archive.
+    const staged = join(temporary, "muse-native-source");
+    await mkdir(staged, { recursive: true });
+    for (const file of pluginFiles("muse")) {
+      const target = join(staged, file);
+      await mkdir(dirname(target), { recursive: true });
+      await cp(join(directory, file), target);
+    }
+    run("bwrap", [...arguments_, "muse", "plugins", "validate", staged]);
+    run("bwrap", [...arguments_, "muse", "plugins", "install", staged]);
+    const listing = z
+      .object({
+        plugins: z.array(
+          z.object({
+            plugin: z.object({
+              capabilities: z.object({
+                hooks: z.array(z.object({ source_path: z.string() })),
+              }),
+            }),
+          }),
+        ),
+      })
+      .parse(
+        JSON.parse(
+          run("bwrap", [...arguments_, "muse", "plugins", "list", "--json"]),
+        ),
+      );
+    const hookPath = listing.plugins
+      .at(0)
+      ?.plugin.capabilities.hooks.at(0)?.source_path;
+    assert.ok(hookPath !== undefined);
+    const packaged = dirname(dirname(hookPath));
+    const home = homedir();
+    assert.ok(packaged.startsWith(`${home}/`));
+    cached = join(sandbox, packaged.slice(home.length + 1));
+    installedVersion = museManifestSchema.parse(
+      await json(join(staged, ".muse-plugin/plugin.json")),
+    ).version;
   } else {
-    run("bwrap", [...arguments_, "claude", "plugin", "validate", directory]);
-    run("bwrap", [
-      ...arguments_,
-      "claude",
-      "plugin",
-      "marketplace",
-      "add",
-      directory,
-    ]);
-    run("bwrap", [
-      ...arguments_,
-      "claude",
-      "plugin",
-      "install",
-      `${PRODUCT}@${PRODUCT}`,
-    ]);
-    assert.match(
-      run("bwrap", [...arguments_, "claude", "plugin", "list"]),
-      /vibecheck-jev/u,
+    if (platform === "codex") {
+      run("bwrap", [
+        ...arguments_,
+        "codex",
+        "plugin",
+        "marketplace",
+        "add",
+        directory,
+      ]);
+      run("bwrap", [
+        ...arguments_,
+        "codex",
+        "plugin",
+        "add",
+        `${PRODUCT}@${PRODUCT}`,
+      ]);
+      assert.match(
+        run("bwrap", [...arguments_, "codex", "plugin", "list"]),
+        /vibecheck-jev/u,
+      );
+    } else {
+      run("bwrap", [...arguments_, "claude", "plugin", "validate", directory]);
+      run("bwrap", [
+        ...arguments_,
+        "claude",
+        "plugin",
+        "marketplace",
+        "add",
+        directory,
+      ]);
+      run("bwrap", [
+        ...arguments_,
+        "claude",
+        "plugin",
+        "install",
+        `${PRODUCT}@${PRODUCT}`,
+      ]);
+      assert.match(
+        run("bwrap", [...arguments_, "claude", "plugin", "list"]),
+        /vibecheck-jev/u,
+      );
+    }
+    const manifest = manifestSchema.parse(
+      await json(join(directory, `.${platform}-plugin/plugin.json`)),
+    );
+    installedVersion = manifest.version;
+    cached = join(
+      sandbox,
+      platform === "codex" ? ".codex" : ".claude",
+      `plugins/cache/${PRODUCT}/${PRODUCT}`,
+      manifest.version,
     );
   }
-  const manifest = manifestSchema.parse(
-    await json(join(directory, `.${platform}-plugin/plugin.json`)),
-  );
-  const cached = join(
-    sandbox,
-    platform === "codex" ? ".codex" : ".claude",
-    `plugins/cache/${PRODUCT}/${PRODUCT}`,
-    manifest.version,
-  );
   await rm(join(cached, "node_modules"), { recursive: true, force: true });
   await makeReadOnly(cached);
   try {
@@ -528,7 +729,7 @@ export async function verifyNativeInstall(
         runtime,
         join(temporary, `${runtime}-cached.sqlite3`),
         temporary,
-        manifest.version,
+        installedVersion,
       );
   } finally {
     await makeWritable(cached);

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -15,6 +15,33 @@ export function writeTranscript(
     `${lines.map((line) => JSON.stringify(line)).join("\n")}\n{"partial`,
   );
   return path;
+}
+
+/** A Muse session id created 2026-09-28T22:43:54Z, so its log sits in the 2026/09/28 day folder. */
+export const MUSE_SESSION_ID = "01a0ea30-628e-7e71-8c05-032028c09217";
+export const MUSE_SESSION_DAY: readonly [string, string, string] = [
+  "2026",
+  "09",
+  "28",
+];
+
+/** A Muse sessions store holding one log, laid out the way Muse shards it. */
+export function writeMuseSession(
+  t: TestContext,
+  lines: readonly unknown[],
+  sessionId: string = MUSE_SESSION_ID,
+  day: readonly string[] = MUSE_SESSION_DAY,
+): { sessionsDir: string; path: string } {
+  const sessionsDir = mkdtempSync(join(tmpdir(), "vibecheck-jev-sessions-"));
+  t.after(() => rmSync(sessionsDir, { recursive: true, force: true }));
+  const directory = join(sessionsDir, ...day, sessionId);
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, "session.jsonl");
+  writeFileSync(
+    path,
+    `${lines.map((line) => JSON.stringify(line)).join("\n")}\n{"partial`,
+  );
+  return { sessionsDir, path };
 }
 
 export const CLAUDE_LINES = [
@@ -212,4 +239,96 @@ export const CODEX_LINES = [
       content: [{ type: "output_text", text: "The checkout test passes now." }],
     },
   },
+];
+
+function museEnvelope(id: string, sequence: number, event: unknown): unknown {
+  return {
+    schema_version: 1,
+    id,
+    stream: { kind: "session", id: MUSE_SESSION_ID },
+    sequence,
+    recorded_at: 1790635303116800,
+    record_type: "event",
+    durability: "durable",
+    causation_id: null,
+    payload_type: "runtime.session",
+    payload_schema_version: 1,
+    payload: { event, kind: "run", run_id: "run-1" },
+  };
+}
+
+export const MUSE_LINES = [
+  {
+    retained_frame: "session_permission_transaction",
+    frame_schema_version: 1,
+    outer_log_ordinal: 1,
+    transaction_id: "frame-1",
+    children: [
+      {
+        child_index: 0,
+        record_json: JSON.stringify(
+          museEnvelope("rec-1", 1, {
+            kind: "started",
+            prompt: "Add a CSV export to the reports page.",
+          }),
+        ),
+      },
+    ],
+    content_sha256: "sha256:frame",
+  },
+  museEnvelope("rec-2", 2, {
+    kind: "assistant_message_committed",
+    message_id: "m-1",
+    text: "Running the report tests first.",
+  }),
+  museEnvelope("rec-3", 3, {
+    kind: "assistant_tool_calls_committed",
+    message_id: "m-1",
+    response_id: "resp-1",
+    tool_calls: [
+      {
+        args: JSON.stringify({
+          command: "npm test tests/reports",
+          description: "Run the report tests",
+        }),
+        call_id: "call_1",
+        id: "fc_1",
+        name: "bash",
+      },
+    ],
+  }),
+  museEnvelope("rec-4", 4, {
+    kind: "tool_result_batch_committed",
+    batch_id: "m-1",
+    results: [
+      {
+        text: "PASS tests/reports/csv.test.ts\nTests: 12 passed",
+        tool_call_id: "call_1",
+        tool_call_index: 0,
+      },
+    ],
+  }),
+  museEnvelope("rec-5", 5, {
+    kind: "assistant_tool_calls_committed",
+    message_id: "m-2",
+    response_id: "resp-2",
+    tool_calls: [
+      {
+        args: JSON.stringify({
+          command_id: "tests",
+          objective:
+            "Write tests for src/reports/csv.ts until every function has one.",
+          role: "tests",
+        }),
+        call_id: "call_2",
+        id: "fc_2",
+        name: "subagent_spawn",
+      },
+    ],
+  }),
+  museEnvelope("rec-6", 6, {
+    kind: "assistant_message_committed",
+    message_id: "m-3",
+    text: "All 12 report tests pass. The CSV export is in src/reports/csv.ts.",
+  }),
 ];

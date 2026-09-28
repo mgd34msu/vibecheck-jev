@@ -1,9 +1,9 @@
 // PreToolUse hook for agent briefs: Claude Code's Agent, Task and
-// SendMessage, and Codex's spawn_agent, send_message, followup_task and
-// send_input. It blocks a brief that asks for less than the recorded
-// standard or plans to leave work for later (brief-scope), and a new
-// worker's brief that leaves out the project rules governing its work
-// (brief-carries-rules).
+// SendMessage, Codex's spawn_agent, send_message, followup_task and
+// send_input, and Muse's subagent_spawn and subagent_send_message. It blocks
+// a brief that asks for less than the recorded standard or plans to leave
+// work for later (brief-scope), and a new worker's brief that leaves out the
+// project rules governing its work (brief-carries-rules).
 //
 // The standard comes from the ledger: the plan, this session's claimed tasks
 // and their accepted exceptions. A message to a running worker is judged
@@ -16,12 +16,7 @@ import { entryFor } from "../entries.js";
 import { isJudgment, runCheck } from "../judgment.js";
 import { resolveContext } from "../project.js";
 import { exceptionsText, planText, rulesText, taskText } from "../standard.js";
-import {
-  claudeLaunchBrief,
-  isSealed,
-  readTranscript,
-  recentRequests,
-} from "../transcript.js";
+import { claudeLaunchBrief, isSealed, recentRequests } from "../transcript.js";
 import type { NewEntry, Subject } from "../../verification/store.js";
 import {
   allow,
@@ -30,17 +25,24 @@ import {
   inputString,
   parsePayload,
   preToolPayloadSchema,
+  readHookTranscript,
   recordEntries,
   type HookDeps,
   type HookResult,
 } from "./io.js";
 
-const LAUNCH_TOOLS = new Set(["Agent", "Task", "spawn_agent"]);
+const LAUNCH_TOOLS = new Set([
+  "Agent",
+  "Task",
+  "spawn_agent",
+  "subagent_spawn",
+]);
 const MESSAGE_TOOLS = new Set([
   "SendMessage",
   "send_message",
   "followup_task",
   "send_input",
+  "subagent_send_message",
 ]);
 
 export async function preToolHook(
@@ -57,7 +59,13 @@ export async function preToolHook(
   const launch = LAUNCH_TOOLS.has(toolName);
   if (!launch && !MESSAGE_TOOLS.has(toolName))
     return allow(deps.client, "PreToolUse");
-  const brief = inputString(payload.tool_input, "prompt", "message", "task");
+  const brief = inputString(
+    payload.tool_input,
+    "prompt",
+    "message",
+    "task",
+    "objective",
+  );
   if (brief === undefined) return allow(deps.client, "PreToolUse");
   if (isSealed(brief))
     return {
@@ -73,11 +81,14 @@ export async function preToolHook(
       : { sessionId: payload.session_id }),
     ...(payload.cwd === undefined ? {} : { cwd: payload.cwd }),
   });
-  const transcript =
-    typeof payload.transcript_path === "string"
-      ? readTranscript(payload.transcript_path, deps.client)
-      : undefined;
-  const target = inputString(payload.tool_input, "to", "target", "recipient");
+  const transcript = readHookTranscript(deps, payload);
+  const target = inputString(
+    payload.tool_input,
+    "to",
+    "target",
+    "recipient",
+    "subagent_id",
+  );
   const launched =
     !launch &&
     target !== undefined &&

@@ -19,11 +19,18 @@ import { z } from "zod";
 import { version } from "../src/version.js";
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export type Platform = "codex" | "claude";
-export const platforms: Platform[] = ["codex", "claude"];
+export type Platform = "codex" | "claude" | "muse";
+export const platforms: Platform[] = ["codex", "claude", "muse"];
 export const PRODUCT = "vibecheck-jev";
 export const LAUNCHER = "scripts/vibecheck-jev.sh";
 export const BUNDLE = "runtime/vibecheck-jev.mjs";
+/** One wrapper per Muse hook: Muse rejects two hooks sharing a source file. */
+export const MUSE_HOOKS = [
+  "hooks/muse-pretool.sh",
+  "hooks/muse-bash-guard.sh",
+  "hooks/muse-subagent-stop.sh",
+  "hooks/muse-session-end.sh",
+];
 export const commonFiles = [
   "README.md",
   "LICENSE",
@@ -37,9 +44,11 @@ export const commonFiles = [
   "skills/vibecheck-jev/SKILL.md",
 ];
 
-/** The hook configuration each client reads. */
-export function hookFile(platform: Platform): string {
-  return platform === "codex" ? "hooks/codex-hooks.json" : "hooks/hooks.json";
+/** The hook configuration each client reads. Muse declares its hooks in its manifest instead. */
+export function hookFile(platform: Platform): string | undefined {
+  if (platform === "codex") return "hooks/codex-hooks.json";
+  if (platform === "claude") return "hooks/hooks.json";
+  return undefined;
 }
 
 export async function packageVersion(directory = root): Promise<string> {
@@ -51,10 +60,13 @@ export async function packageVersion(directory = root): Promise<string> {
 }
 
 export function pluginFiles(platform: Platform): string[] {
+  if (platform === "muse")
+    return [...commonFiles, ".muse-plugin/plugin.json", ...MUSE_HOOKS].sort();
+  const hooks = hookFile(platform);
   return [
     ...commonFiles,
     `.${platform}-plugin/plugin.json`,
-    hookFile(platform),
+    ...(hooks === undefined ? [] : [hooks]),
     platform === "codex"
       ? ".agents/plugins/marketplace.json"
       : ".claude-plugin/marketplace.json",

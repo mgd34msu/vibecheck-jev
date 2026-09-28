@@ -1,6 +1,6 @@
 # vibecheck-jev
 
-vibecheck-jev is a work ledger for Claude Code and Codex agents whose reports are checked. Agents record the plan, their claims, progress, blockers and handoffs through nine MCP tools, as in any shared ledger. A Jev-compatible judgment model then reads what they report against what was asked: a "done" report against the task's goal and acceptance criteria, a blocker against the reasons the project accepts, a plan change against the work it replaces. Project status shows every task as reported and as verified, and leads with what needs attention.
+vibecheck-jev is a work ledger for Claude Code, Codex, and Muse agents whose reports are checked. Agents record the plan, their claims, progress, blockers and handoffs through nine MCP tools, as in any shared ledger. A Jev-compatible judgment model then reads what they report against what was asked: a "done" report against the task's goal and acceptance criteria, a blocker against the reasons the project accepts, a plan change against the work it replaces. Project status shows every task as reported and as verified, and leads with what needs attention.
 
 The plugin also installs hooks that check the agent's own turns: briefs it sends to subagents, shell deletes it runs, and the reply it stops on.
 
@@ -40,9 +40,19 @@ codex plugin marketplace add mgd34msu/vibecheck-jev --ref v1.0.0
 codex plugin add vibecheck-jev@vibecheck-jev
 ```
 
-Reload the session after installing. The plugin registers the `vibecheck-jev` MCP server, a skill that teaches agents to use the ledger and read verification, and three hooks. Codex asks you to review and trust plugin hooks before they run. Plugin startup installs nothing and writes nothing inside the plugin folder.
+For Muse:
 
-Both clients use the same config file and the same ledger database, so an agent in Claude Code and an agent in Codex on the same machine share one ledger.
+```bash
+muse plugins marketplace add vibecheck-jev https://github.com/mgd34msu/vibecheck-jev
+muse plugins install vibecheck-jev@vibecheck-jev
+muse plugins approve vibecheck-jev
+```
+
+You can also install from an extracted `vibecheck-jev-muse-*.zip` with `muse plugins install <directory>` followed by `muse plugins approve vibecheck-jev`. Install from a clean tree. Muse refuses directories that contain symlinks, such as a checkout with `node_modules`.
+
+Reload the session after installing. The plugin registers the `vibecheck-jev` MCP server, a skill that teaches agents to use the ledger and read verification, and hooks that check subagent briefs, shell deletes, and stopping replies. Codex and Muse ask you to review and trust plugin hooks before they run. Plugin startup installs nothing and writes nothing inside the plugin folder.
+
+All three clients use the same config file and the same ledger database, so agents in Claude Code, Codex, and Muse on the same machine share one ledger.
 
 To tell your agents how to use the ledger in a project, add the block in [docs/agent-usage.md](docs/agent-usage.md) to the instructions file they read (for example `AGENTS.md` or `CLAUDE.md`).
 
@@ -241,7 +251,7 @@ The delete guard is not a model check: it refuses a shell `rm`, `rmdir`, `unlink
 
 Turning a check off means it never reads and records nothing. A gate that is off lets the work through as reported; turning off `vibecheck.claims-done` makes every done report complete its task, marked unverified.
 
-Codex seals the messages its agents send each other, so the brief check cannot read Codex subagent briefs. It says so on stderr and lets them through; the Stop checks and the delete guard work the same in both clients.
+Codex seals the messages its agents send each other, so the brief check cannot read Codex subagent briefs. It says so on stderr and lets them through; the Stop checks and the delete guard work the same in all three clients. Muse has no hook that holds the main turn's final reply. A subagent's reply is checked when the subagent stops and can send it back to work. The session's final reply is checked at session end and its verdicts are recorded without holding it.
 
 ## Record the standard the checks read
 
@@ -303,20 +313,20 @@ When a check reads a fixture wrong on your source, change that check's threshold
 
 The plugin's launcher, `scripts/vibecheck-jev.sh`, runs every command. From a source checkout, `bun src/cli.ts` does the same.
 
-| Command                                                               | What it does                                                                                                                                                        |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| (no command)                                                          | Runs the MCP server; see `--help` for its options                                                                                                                   |
-| `hook pretool\|bash-guard\|stop --client claude\|codex`               | Runs a hook on the payload on stdin (the plugin's hook files call this)                                                                                             |
-| `sources [--source ID]`                                               | Probes each configured source                                                                                                                                       |
-| `measure fixtures\|live\|replay`                                      | Calibration, as above                                                                                                                                               |
-| `fixtures [--source ID]`                                              | One pass of every fixture                                                                                                                                           |
-| `label list\|mark\|mark-where\|mark-last`                             | Labels verdicts right or wrong                                                                                                                                      |
-| `check brief\|message\|report\|diff FILES [--project ID --task TASK]` | Runs a check on files; with a project and task, the standard comes from the ledger. Exit 0 clean, 2 flagged, 1 unreadable                                           |
-| `watch-agents --project ID [--session ID]`                            | Reads new messages from a session's descendant agents (found through the ledger's session ancestry) for items given up; `--transcript FILE` reads given transcripts |
-| `exception-check FILE...`                                             | Whether files hold data only                                                                                                                                        |
-| `report-of AGENT-OR-SESSION-ID [DIRECTORY]`                           | Prints an agent's final reply from its transcript                                                                                                                   |
-| `laya install\|serve`                                                 | Installs and serves Laya                                                                                                                                            |
-| `config path\|init [--force]\|check`                                  | Config file helpers                                                                                                                                                 |
+| Command                                                                    | What it does                                                                                                                                                        |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (no command)                                                               | Runs the MCP server; see `--help` for its options                                                                                                                   |
+| `hook pretool\|bash-guard\|stop\|session-end --client claude\|codex\|muse` | Runs a hook on the payload on stdin (the plugin's hook files call this)                                                                                             |
+| `sources [--source ID]`                                                    | Probes each configured source                                                                                                                                       |
+| `measure fixtures\|live\|replay`                                           | Calibration, as above                                                                                                                                               |
+| `fixtures [--source ID]`                                                   | One pass of every fixture                                                                                                                                           |
+| `label list\|mark\|mark-where\|mark-last`                                  | Labels verdicts right or wrong                                                                                                                                      |
+| `check brief\|message\|report\|diff FILES [--project ID --task TASK]`      | Runs a check on files; with a project and task, the standard comes from the ledger. Exit 0 clean, 2 flagged, 1 unreadable                                           |
+| `watch-agents --project ID [--session ID]`                                 | Reads new messages from a session's descendant agents (found through the ledger's session ancestry) for items given up; `--transcript FILE` reads given transcripts |
+| `exception-check FILE...`                                                  | Whether files hold data only                                                                                                                                        |
+| `report-of AGENT-OR-SESSION-ID [DIRECTORY]`                                | Prints an agent's final reply from its transcript                                                                                                                   |
+| `laya install\|serve`                                                      | Installs and serves Laya                                                                                                                                            |
+| `config path\|init [--force]\|check`                                       | Config file helpers                                                                                                                                                 |
 
 ## Data and the database
 
@@ -363,6 +373,6 @@ bun run build:release
 bun run verify
 ```
 
-`build:release` refreshes the bundled runtime `runtime/vibecheck-jev.mjs`, which includes the TypeSafe SDK, and writes the Claude and Codex plugin archives, the standalone runtime archive and `SHA256SUMS` to `artifacts/`. `verify` checks formatting, strict types, forbidden type escapes and bundle freshness, then runs the tests under Bun and as compiled JavaScript under Node.js 24 or later. The tests use a scripted judgment source and make no network calls. `bun run verify:release` checks the archives and runs their MCP servers and hooks on both runtimes.
+`build:release` refreshes the bundled runtime `runtime/vibecheck-jev.mjs`, which includes the TypeSafe SDK, and writes the Claude, Codex, and Muse plugin archives, the standalone runtime archive and `SHA256SUMS` to `artifacts/`. `verify` checks formatting, strict types, forbidden type escapes and bundle freshness, then runs the tests under Bun and as compiled JavaScript under Node.js 24 or later. The tests use a scripted judgment source and make no network calls. `bun run verify:release` checks the archives and runs their MCP servers and hooks on both runtimes.
 
 Dependency licenses are in `runtime/THIRD-PARTY-NOTICES.txt`. vibecheck-jev is released under the MIT license.

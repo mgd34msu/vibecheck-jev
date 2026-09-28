@@ -1,7 +1,7 @@
 {
   "name": "@mgd34msu/vibecheck-jev",
   "version": "1.0.0",
-  "description": "A work ledger for Claude Code and Codex agents whose reports are checked by a Jev-compatible judgment model.",
+  "description": "A work ledger for Claude Code, Codex, and Muse agents whose reports are checked by a Jev-compatible judgment model.",
   "license": "MIT",
   "type": "module",
   "engines": {

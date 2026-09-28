@@ -1,5 +1,5 @@
-// Configuration: one JSON-with-comments file shared by the Claude Code and
-// Codex installs, like the ledger database. It holds the judgment sources in
+// Configuration: one JSON-with-comments file shared by the Claude Code,
+// Codex, and Muse installs, like the ledger database. It holds the judgment sources in
 // the order they are tried, each check's switch, thresholds and routing, the
 // hook deadlines, and the data folder and database path.
 //

@@ -64,6 +64,17 @@ export function defaultDatabase(
   return join(dataDirectory(environment, settings), "ledger.sqlite3");
 }
 
+/** $XDG_DATA_HOME/muse/sessions, or ~/.local/share/muse/sessions: where Muse keeps session logs. */
+export function museSessionsDir(
+  environment: Environment = process.env,
+): string {
+  return join(
+    xdg(environment, "XDG_DATA_HOME", ".local/share"),
+    "muse",
+    "sessions",
+  );
+}
+
 /** VIBECHECK_JEV_CONFIG, or config.jsonc in the config folder. */
 export function configFile(environment: Environment = process.env): string {
   const configured = environment["VIBECHECK_JEV_CONFIG"];

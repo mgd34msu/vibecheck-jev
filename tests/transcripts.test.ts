@@ -1,12 +1,25 @@
 import assert from "node:assert/strict";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { CLAUDE_LINES, CODEX_LINES, writeTranscript } from "./jev-helpers.js";
+import {
+  CLAUDE_LINES,
+  CODEX_LINES,
+  MUSE_LINES,
+  MUSE_SESSION_DAY,
+  MUSE_SESSION_ID,
+  writeMuseSession,
+  writeTranscript,
+} from "./jev-helpers.js";
 import {
   claudeLaunchBrief,
+  findMuseSessionLog,
   isSealed,
   joinEvidence,
   readClaudeTranscript,
   readCodexTranscript,
+  readMuseTranscript,
   replySentences,
 } from "../src/jev/transcript.js";
 
@@ -173,6 +186,135 @@ test("an older Codex rollout with user_message events and compacted history stil
   assert.equal(view.trigger, "notification");
   assert.ok(
     view.evidence.some((segment) => segment.includes("$ bash -lc ls src")),
+  );
+});
+
+test("a Muse session log yields the user's prompts, the reply and the evidence", (t) => {
+  const path = writeTranscript(t, MUSE_LINES);
+  const view = readMuseTranscript(path);
+  assert.deepEqual(view.userMessages, [
+    "Add a CSV export to the reports page.",
+  ]);
+  assert.equal(view.trigger, "user");
+  assert.equal(
+    view.lastReply,
+    "Running the report tests first.\nAll 12 report tests pass. The CSV export is in src/reports/csv.ts.",
+  );
+  assert.equal(
+    view.finalText,
+    "All 12 report tests pass. The CSV export is in src/reports/csv.ts.",
+  );
+  assert.ok(
+    view.evidence.some((segment) => segment.includes("Tests: 12 passed")),
+  );
+  assert.ok(
+    view.evidence.some((segment) =>
+      segment.startsWith("Command run (Run the report tests):\n$ npm test"),
+    ),
+  );
+  assert.ok(
+    view.evidence.some((segment) =>
+      segment.startsWith("Instruction sent by subagent_spawn: Write tests"),
+    ),
+  );
+});
+
+test("a Muse delivery starts a notification turn and a stop block resets the reply", (t) => {
+  const notice = readMuseTranscript(
+    writeTranscript(t, [
+      ...MUSE_LINES,
+      {
+        payload: {
+          kind: "run",
+          event: {
+            kind: "inbox_item_queued",
+            source: { source: "scheduled" },
+            payload: { prompt: "Nightly check-in." },
+          },
+        },
+      },
+      {
+        payload: {
+          kind: "run",
+          event: {
+            kind: "assistant_message_committed",
+            text: "Checked in.",
+          },
+        },
+      },
+    ]),
+  );
+  assert.equal(notice.trigger, "notification");
+  assert.equal(notice.lastReply, "Checked in.");
+  const blocked = readMuseTranscript(
+    writeTranscript(t, [
+      ...MUSE_LINES,
+      {
+        payload: {
+          kind: "run",
+          event: {
+            kind: "context_block_updated",
+            lifecycle: "subagent_stop",
+            reason: "hook:subagent_stop",
+            text: "answer the question",
+          },
+        },
+      },
+      {
+        payload: {
+          kind: "run",
+          event: {
+            kind: "assistant_message_committed",
+            text: "Corrected reply.",
+          },
+        },
+      },
+    ]),
+  );
+  assert.equal(blocked.lastReply, "Corrected reply.");
+});
+
+test("Muse session logs are found by session id in their day folder or beside their parent", (t) => {
+  const seeded = writeMuseSession(t, MUSE_LINES);
+  assert.equal(
+    findMuseSessionLog(seeded.sessionsDir, MUSE_SESSION_ID),
+    seeded.path,
+  );
+  const legacy = writeMuseSession(
+    t,
+    MUSE_LINES,
+    "d00636fe-322f-49b0-bf3f-c767104e50fa",
+    ["2026", "09", "27"],
+  );
+  assert.equal(
+    findMuseSessionLog(
+      legacy.sessionsDir,
+      "d00636fe-322f-49b0-bf3f-c767104e50fa",
+    ),
+    legacy.path,
+  );
+  const childId = "01a0ea30-9d79-76c0-b181-63b12c20cb71";
+  const parent = join(
+    seeded.sessionsDir,
+    ...MUSE_SESSION_DAY,
+    "01a0ea30-628e-7e71-8c05-032028c09217",
+    "subagent",
+    childId,
+  );
+  mkdirSync(parent, { recursive: true });
+  const child = join(parent, "session.jsonl");
+  copyFileSync(seeded.path, child);
+  assert.equal(findMuseSessionLog(seeded.sessionsDir, childId), child);
+  assert.equal(
+    findMuseSessionLog(seeded.sessionsDir, "019c-session"),
+    undefined,
+  );
+  assert.equal(
+    findMuseSessionLog(
+      join(tmpdir(), "vibecheck-jev-no-such-store"),
+      MUSE_SESSION_ID,
+    ),
+    undefined,
   );
 });
 
