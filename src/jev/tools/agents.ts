@@ -1,5 +1,5 @@
-// watch-agents --project ID [--session SESSION-ID] [--client claude|codex|muse]
-// watch-agents --transcript FILE [--transcript FILE...] [--client claude|codex|muse]
+// watch-agents --project ID [--session SESSION-ID] [--client claude|codex|muse|antigravity]
+// watch-agents --transcript FILE [--transcript FILE...] [--client claude|codex|muse|antigravity]
 //   Reads what running agents wrote since the last look and flags a message
 //   that abandons an item with work left (gives-up). The agents are the
 //   descendant sessions of SESSION-ID in the ledger (the coordinator when
@@ -16,9 +16,9 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { z } from "zod";
-import { museSessionsDir } from "../../paths.js";
+import { antigravityBrainDir, museSessionsDir } from "../../paths.js";
 import type { SessionRecord, WorkRecord } from "../../schemas.js";
 import {
   appendEntry,
@@ -42,6 +42,18 @@ import {
 } from "./common.js";
 
 const MAX_DEPTH = 6;
+
+/** Whether one of the directory's ancestor folders carries the id: an Antigravity conversation names its brain folder three levels above its transcripts. */
+function ancestorIs(directory: string, id: string, levels: number): boolean {
+  let current = directory;
+  for (let level = 0; level < levels; level += 1) {
+    if (basename(current) === id) return true;
+    const parent = dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+  return false;
+}
 
 /** Transcript files for a session or agent id, under the clients' session folders. Muse names the folder, not the file. */
 export function findTranscripts(
@@ -71,7 +83,9 @@ export function findTranscripts(
         (name === `${id}.jsonl` ||
           name === `agent-${id}.jsonl` ||
           name.endsWith(`-${id}.jsonl`) ||
-          (name === "session.jsonl" && basename(directory) === id))
+          (name === "session.jsonl" && basename(directory) === id) ||
+          ((name === "transcript.jsonl" || name === "transcript_full.jsonl") &&
+            ancestorIs(directory, id, 4)))
       )
         found.push(path);
     }
@@ -86,6 +100,7 @@ function defaultRoots(io: ToolIO): string[] {
     join(io.env["CLAUDE_CONFIG_DIR"] ?? join(home, ".claude"), "projects"),
     join(io.env["CODEX_HOME"] ?? join(home, ".codex"), "sessions"),
     museSessionsDir(io.env),
+    antigravityBrainDir(io.env),
   ];
 }
 
@@ -111,6 +126,11 @@ const museReplySchema = z.looseObject({
     }),
   }),
 });
+const antigravityReplySchema = z.looseObject({
+  source: z.string().optional(),
+  type: z.string().optional(),
+  content: z.string().optional(),
+});
 
 /** The agent's reply texts with their line numbers, from any client's transcript. */
 export function replyTexts(path: string): { line: number; text: string }[] {
@@ -132,6 +152,17 @@ export function replyTexts(path: string): { line: number; text: string }[] {
         muse.data.payload.event.text !== undefined
       ) {
         const text = muse.data.payload.event.text.trim();
+        if (text.length > 0) texts.push({ line: index + 1, text });
+        return;
+      }
+      const antigravity = antigravityReplySchema.safeParse(value);
+      if (
+        antigravity.success &&
+        antigravity.data.source === "MODEL" &&
+        antigravity.data.type === "PLANNER_RESPONSE" &&
+        antigravity.data.content !== undefined
+      ) {
+        const text = antigravity.data.content.trim();
         if (text.length > 0) texts.push({ line: index + 1, text });
         return;
       }

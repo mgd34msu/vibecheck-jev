@@ -1,0 +1,22 @@
+{
+  "name": "vibecheck-jev",
+  "version": "1.0.0",
+  "description": "A work ledger for coding agents whose reports are checked: done claims, briefs, blockers and replies are judged by a Jev-compatible model against the recorded plan.",
+  "author": {
+    "name": "Mike Davis",
+    "email": "mgd34msu@gmail.com"
+  },
+  "homepage": "https://github.com/mgd34msu/vibecheck-jev#readme",
+  "repository": "https://github.com/mgd34msu/vibecheck-jev",
+  "license": "MIT",
+  "mcpServers": {
+    "vibecheck-jev": {
+      "command": "bash",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/vibecheck-jev.sh",
+        "--transport",
+        "stdio"
+      ]
+    }
+  }
+}

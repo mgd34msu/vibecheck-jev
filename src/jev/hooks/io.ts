@@ -4,22 +4,33 @@
 // Claude Code, Codex and Muse send one JSON object on stdin. All carry
 // `session_id`, `cwd` and `transcript_path` (nullable on Codex and Muse);
 // PreToolUse adds `tool_name` and `tool_input`; stopping events add
-// `last_assistant_message` and `stop_hook_active`. All clients read a
+// `last_assistant_message` and `stop_hook_active`. Those three read a
 // PreToolUse denial from `hookSpecificOutput.permissionDecision` and a stop
 // block from `{"decision":"block","reason":...}` on stdout.
+//
+// Antigravity sends its own shapes, translated here to the shared payloads:
+// PreToolUse carries `toolCall` with PascalCase args plus `conversationId`,
+// `workspacePaths` and `transcriptPath`; Stop carries only the common
+// fields, so the reply always comes from the transcript. Antigravity reads
+// a PreToolUse answer from a flat `decision` of allow or deny and a stop
+// block from `{"decision":"continue","reason":...}`; anything else lets the
+// stop through.
 
 import { existsSync } from "node:fs";
 import { z } from "zod";
 import { Database } from "../../db.js";
 import type { SqlAccess } from "../../db.js";
-import { museSessionsDir } from "../../paths.js";
+import { antigravityBrainDir, museSessionsDir } from "../../paths.js";
 import {
   appendEntry,
   type NewEntry,
   type Subject,
 } from "../../verification/store.js";
 import {
+  antigravityPrompts,
+  findAntigravityTranscript,
   findMuseSessionLog,
+  readAntigravityTranscript,
   readMuseTranscript,
   readTranscript,
   type Client,
@@ -59,11 +70,120 @@ export type HookEvent = "PreToolUse" | "Stop" | "SubagentStop" | "SessionEnd";
 export interface HookDeps {
   readonly client: Client;
   readonly databasePath: string;
+  /** Where Antigravity conversation stores live; the default brain when unset. */
+  readonly antigravityBrain?: string;
   /** Where Muse session logs live; the default store when unset. */
   readonly sessionsDir?: string;
   /** The configured chain, or why none is usable. Called only when a check will run. */
   readonly judgment: () =>
     Judgment | { readonly unusable: readonly SourceSkip[] };
+}
+
+const antigravityCommonSchema = z.looseObject({
+  conversationId: z.string().optional(),
+  workspacePaths: z.array(z.string()).optional(),
+  transcriptPath: z.string().optional(),
+});
+
+const antigravityPreToolSchema = antigravityCommonSchema.extend({
+  toolCall: z.looseObject({
+    name: z.string(),
+    args: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+function antigravityArg(
+  args: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = args[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/** An Antigravity tool call flattened to the shared brief and command keys. */
+function antigravityToolInput(
+  name: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (name === "run_command") {
+    const command = antigravityArg(args, "CommandLine");
+    return command === undefined ? {} : { command };
+  }
+  if (name === "invoke_subagent") {
+    const prompts = antigravityPrompts(args["Subagents"]);
+    return prompts.length === 0 ? {} : { prompt: prompts.join("\n\n") };
+  }
+  if (name === "send_message") {
+    const message = antigravityArg(args, "Message");
+    const to = antigravityArg(args, "Recipient");
+    return {
+      ...(message === undefined ? {} : { message }),
+      ...(to === undefined ? {} : { to }),
+    };
+  }
+  if (name === "manage_task") {
+    if (antigravityArg(args, "Action") !== "send_input") return {};
+    const message = antigravityArg(args, "Input");
+    const to = antigravityArg(args, "TaskId");
+    return {
+      ...(message === undefined ? {} : { message }),
+      ...(to === undefined ? {} : { to }),
+    };
+  }
+  return {};
+}
+
+function antigravitySession(wire: {
+  readonly conversationId?: string | undefined;
+  readonly workspacePaths?: readonly string[] | undefined;
+  readonly transcriptPath?: string | undefined;
+}): Pick<PreToolPayload, "session_id" | "cwd" | "transcript_path"> {
+  return {
+    ...(wire.conversationId === undefined
+      ? {}
+      : { session_id: wire.conversationId }),
+    ...(wire.workspacePaths?.[0] === undefined
+      ? {}
+      : { cwd: wire.workspacePaths[0] }),
+    ...(wire.transcriptPath === undefined
+      ? {}
+      : { transcript_path: wire.transcriptPath }),
+  };
+}
+
+export function translateAntigravityPreTool(
+  text: string,
+): PreToolPayload | string {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return "hook input is not JSON";
+  }
+  const wire = antigravityPreToolSchema.safeParse(value);
+  if (!wire.success)
+    return `hook input is missing fields: ${wire.error.issues.map((issue) => issue.path.join(".")).join(", ")}`;
+  return {
+    ...antigravitySession(wire.data),
+    tool_name: wire.data.toolCall.name,
+    tool_input: antigravityToolInput(
+      wire.data.toolCall.name,
+      wire.data.toolCall.args ?? {},
+    ),
+  };
+}
+
+export function translateAntigravityStop(text: string): StopPayload | string {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return "hook input is not JSON";
+  }
+  const wire = antigravityCommonSchema.safeParse(value);
+  if (!wire.success)
+    return `hook input is missing fields: ${wire.error.issues.map((issue) => issue.path.join(".")).join(", ")}`;
+  return antigravitySession(wire.data);
 }
 
 export function parsePayload<T>(
@@ -84,6 +204,10 @@ export function parsePayload<T>(
 
 /** Nothing to say: the tool call or the stop goes ahead. */
 export function allow(client: Client, event: HookEvent): HookResult {
+  if (client === "antigravity")
+    return event === "PreToolUse"
+      ? { stdout: JSON.stringify({ decision: "allow" }), exitCode: 0 }
+      : { stdout: "{}", exitCode: 0 };
   if (client === "muse") return { exitCode: 0 };
   return event === "Stop" && client === "codex"
     ? { stdout: "{}", exitCode: 0 }
@@ -94,7 +218,8 @@ export function allow(client: Client, event: HookEvent): HookResult {
  * A check could not run. The hook fails open: the work goes ahead and the
  * reason goes to stderr. Claude Code shows a non-zero, non-2 exit as a
  * non-blocking error; Codex expects valid JSON from Stop and a zero exit,
- * and Muse a zero exit.
+ * and Muse a zero exit. Antigravity answers PreToolUse with an explicit
+ * allow and Stop with an empty object.
  */
 export function failOpen(
   client: Client,
@@ -102,6 +227,10 @@ export function failOpen(
   message: string,
 ): HookResult {
   const stderr = `vibecheck-jev: ${message}\n`;
+  if (client === "antigravity")
+    return event === "PreToolUse"
+      ? { stdout: JSON.stringify({ decision: "allow" }), stderr, exitCode: 0 }
+      : { stdout: "{}", stderr, exitCode: 0 };
   if (client === "muse") return { stderr, exitCode: 0 };
   if (client === "codex")
     return {
@@ -112,7 +241,7 @@ export function failOpen(
   return { stderr, exitCode: 1 };
 }
 
-/** The session's transcript: Muse names no file, so its log is found by session id. A missing or unreadable log reads as nothing to check against. */
+/** The session's transcript: Muse names no file, so its log is found by session id, and Antigravity falls back to its brain store. A missing or unreadable log reads as nothing to check against. */
 export function readHookTranscript(
   deps: HookDeps,
   payload: {
@@ -121,6 +250,26 @@ export function readHookTranscript(
     readonly child_session_id?: string | undefined;
   },
 ): TranscriptView | undefined {
+  if (deps.client === "antigravity") {
+    if (typeof payload.transcript_path === "string") {
+      try {
+        return readTranscript(payload.transcript_path, deps.client);
+      } catch {
+        // fall through to the brain lookup
+      }
+    }
+    if (payload.session_id === undefined) return undefined;
+    const found = findAntigravityTranscript(
+      deps.antigravityBrain ?? antigravityBrainDir(),
+      payload.session_id,
+    );
+    if (found === undefined) return undefined;
+    try {
+      return readAntigravityTranscript(found);
+    } catch {
+      return undefined;
+    }
+  }
   if (deps.client !== "muse")
     return typeof payload.transcript_path === "string"
       ? readTranscript(payload.transcript_path, deps.client)
@@ -147,7 +296,12 @@ export function readHookTranscript(
   }
 }
 
-export function deny(reason: string): HookResult {
+export function deny(client: Client, reason: string): HookResult {
+  if (client === "antigravity")
+    return {
+      stdout: JSON.stringify({ decision: "deny", reason }),
+      exitCode: 0,
+    };
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
@@ -160,7 +314,12 @@ export function deny(reason: string): HookResult {
   };
 }
 
-export function blockStop(reason: string): HookResult {
+export function blockStop(client: Client, reason: string): HookResult {
+  if (client === "antigravity")
+    return {
+      stdout: JSON.stringify({ decision: "continue", reason }),
+      exitCode: 0,
+    };
   return {
     stdout: JSON.stringify({ decision: "block", reason }),
     exitCode: 0,

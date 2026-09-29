@@ -1,0 +1,33 @@
+{
+  "vibecheck-jev": {
+    "PreToolUse": [
+      {
+        "matcher": "invoke_subagent|send_message|manage_task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash hooks/antigravity-pretool.sh",
+            "timeout": 45
+          }
+        ]
+      },
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash hooks/antigravity-bash-guard.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "bash hooks/antigravity-stop.sh",
+        "timeout": 45
+      }
+    ]
+  }
+}

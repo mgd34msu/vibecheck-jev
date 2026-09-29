@@ -17,6 +17,14 @@
 // `assistant_tool_calls_committed` entries with JSON args and their results
 // as `tool_result_batch_committed` texts.
 //
+// Antigravity writes JSONL steps `{ source, type, content?, thinking?,
+// tool_calls? }`. User text arrives as USER_EXPLICIT/USER_INPUT content
+// wrapped in uppercase section tags; replies as MODEL PLANNER_RESPONSE
+// content; commands and subagent briefs as tool_calls; command output and
+// injected documents as MODEL GENERIC content. The compact transcript
+// JSON-encodes its values while the full one writes them plain; both read
+// the same. Reasoning in `thinking` is never a reply.
+//
 // Recognizing harness-inserted text (reminders, notices, injected context)
 // matches the fixed markers each client writes; it does not read prose.
 
@@ -24,7 +32,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 
-export type Client = "claude" | "codex" | "muse";
+export type Client = "claude" | "codex" | "muse" | "antigravity";
 export type TurnTrigger = "user" | "notification";
 
 export interface TranscriptView {
@@ -705,9 +713,150 @@ export function findMuseSessionLog(
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Antigravity
+// ---------------------------------------------------------------------------
+
+const antigravityStepSchema = z.looseObject({
+  source: z.string().optional(),
+  type: z.string().optional(),
+  content: z.string().optional(),
+  thinking: z.string().optional(),
+  tool_calls: z.array(z.unknown()).optional(),
+});
+const antigravityToolCallSchema = z.looseObject({
+  name: z.string().optional(),
+  args: z.record(z.string(), z.unknown()).optional(),
+});
+const antigravitySubagentSchema = z.looseObject({
+  Prompt: z.string().optional(),
+});
+
+/** Step values in the compact transcript are JSON-encoded; the full transcript writes them plain. */
+function antigravityValue(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('"')) return value;
+  try {
+    const decoded: unknown = JSON.parse(trimmed);
+    return typeof decoded === "string" ? decoded : value;
+  } catch {
+    return value;
+  }
+}
+
+function antigravityList(value: unknown): readonly unknown[] | undefined {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return undefined;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    return Array.isArray(decoded) ? decoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The brief texts of an invoke_subagent call: one prompt per subagent. */
+export function antigravityPrompts(value: unknown): string[] {
+  const list = antigravityList(value);
+  if (list === undefined) return [];
+  const prompts: string[] = [];
+  for (const item of list) {
+    const parsed = antigravitySubagentSchema.safeParse(item);
+    const prompt = parsed.success
+      ? antigravityValue(parsed.data.Prompt)
+      : undefined;
+    if (prompt !== undefined && prompt.length > 0) prompts.push(prompt);
+  }
+  return prompts;
+}
+
+/** Commands and instructions a step sent: what its claims about running work rest on. */
+function antigravityToolCalls(calls: readonly unknown[] | undefined): string[] {
+  if (calls === undefined) return [];
+  const parts: string[] = [];
+  for (const item of calls) {
+    const parsed = antigravityToolCallSchema.safeParse(item);
+    if (!parsed.success) continue;
+    const args = parsed.data.args ?? {};
+    if (parsed.data.name === "run_command") {
+      const command = antigravityValue(args["CommandLine"]);
+      if (command !== undefined)
+        parts.push(commandText(command, antigravityValue(args["toolSummary"])));
+      continue;
+    }
+    if (parsed.data.name === "invoke_subagent") {
+      for (const prompt of antigravityPrompts(args["Subagents"]))
+        parts.push(`Instruction sent by invoke_subagent: ${prompt}`);
+      continue;
+    }
+    if (parsed.data.name === "send_message") {
+      const message = antigravityValue(args["Message"]);
+      if (message !== undefined)
+        parts.push(`Instruction sent by send_message: ${message}`);
+      continue;
+    }
+    if (parsed.data.name === "manage_task") {
+      const input = antigravityValue(args["Input"]);
+      if (input !== undefined)
+        parts.push(`Instruction sent by manage_task: ${input}`);
+    }
+  }
+  return parts;
+}
+
+/** User content wraps sections in mismatched uppercase tags; the request is the text without them. */
+function antigravityUserText(content: string): string | undefined {
+  const text = content.replace(/<\/?[A-Z][A-Z0-9_]*>/gu, "").trim();
+  return text.length > 0 ? text : undefined;
+}
+
+export function readAntigravityTranscript(path: string): TranscriptView {
+  const view = new ViewBuilder();
+  for (const value of lines(path)) {
+    const parsed = antigravityStepSchema.safeParse(value);
+    if (!parsed.success) continue;
+    const step = parsed.data;
+    if (step.source === "USER_EXPLICIT" || step.source === "USER_INPUT") {
+      if (step.content !== undefined) {
+        const text = antigravityUserText(step.content);
+        if (text !== undefined) view.user(text);
+      }
+      continue;
+    }
+    if (step.source !== "MODEL") continue;
+    for (const call of antigravityToolCalls(step.tool_calls))
+      view.toolCall(call);
+    if (step.content === undefined || step.content.trim().length === 0)
+      continue;
+    if (step.type === "PLANNER_RESPONSE") view.reply(step.content);
+    else view.toolResult(step.content);
+  }
+  return view.build();
+}
+
+/** An Antigravity conversation id names its brain folder; the full transcript holds every step. */
+export function findAntigravityTranscript(
+  brainDir: string,
+  sessionId: string,
+): string | undefined {
+  for (const name of ["transcript_full.jsonl", "transcript.jsonl"]) {
+    const candidate = join(
+      brainDir,
+      sessionId,
+      ".system_generated",
+      "logs",
+      name,
+    );
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 export function readTranscript(path: string, client: Client): TranscriptView {
   if (client === "codex") return readCodexTranscript(path);
   if (client === "muse") return readMuseTranscript(path);
+  if (client === "antigravity") return readAntigravityTranscript(path);
   return readClaudeTranscript(path);
 }
 

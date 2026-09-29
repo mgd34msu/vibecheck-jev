@@ -27,4 +27,4 @@ jobs:
       - run: bun run verify
       - run: bun run build:release
       - run: bun run verify:release
-      - run: git diff --exit-code -- runtime/
+      - run: git diff --exit-code -- runtime/ platforms/

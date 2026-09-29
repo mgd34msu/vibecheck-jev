@@ -64,6 +64,19 @@ export function defaultDatabase(
   return join(dataDirectory(environment, settings), "ledger.sqlite3");
 }
 
+/** ~/.gemini/antigravity-cli/brain: where Antigravity keeps conversation stores. */
+export function antigravityBrainDir(
+  environment: Environment = process.env,
+): string {
+  const home = environment["HOME"];
+  return join(
+    home !== undefined && home.length > 0 ? home : homedir(),
+    ".gemini",
+    "antigravity-cli",
+    "brain",
+  );
+}
+
 /** $XDG_DATA_HOME/muse/sessions, or ~/.local/share/muse/sessions: where Muse keeps session logs. */
 export function museSessionsDir(
   environment: Environment = process.env,

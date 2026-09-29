@@ -19,9 +19,14 @@ import { z } from "zod";
 import { version } from "../src/version.js";
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export type Platform = "codex" | "claude" | "muse";
-export const platforms: Platform[] = ["codex", "claude", "muse"];
+export type Platform = "codex" | "claude" | "muse" | "antigravity";
+export const platforms: Platform[] = ["codex", "claude", "muse", "antigravity"];
 export const PRODUCT = "vibecheck-jev";
+/** Committed install units: each harness pulls only its platform directory. */
+export const PLATFORMS_DIR = "platforms";
+export function platformDir(platform: Platform): string {
+  return join(PLATFORMS_DIR, platform);
+}
 export const LAUNCHER = "scripts/vibecheck-jev.sh";
 export const BUNDLE = "runtime/vibecheck-jev.mjs";
 /** One wrapper per Muse hook: Muse rejects two hooks sharing a source file. */
@@ -30,6 +35,17 @@ export const MUSE_HOOKS = [
   "hooks/muse-bash-guard.sh",
   "hooks/muse-subagent-stop.sh",
   "hooks/muse-session-end.sh",
+];
+/** Antigravity reads flat files at the plugin root; the repo root is the install unit. */
+export const ANTIGRAVITY_MANIFESTS = [
+  "plugin.json",
+  "mcp_config.json",
+  "hooks.json",
+];
+export const ANTIGRAVITY_HOOKS = [
+  "hooks/antigravity-pretool.sh",
+  "hooks/antigravity-bash-guard.sh",
+  "hooks/antigravity-stop.sh",
 ];
 export const commonFiles = [
   "README.md",
@@ -48,6 +64,7 @@ export const commonFiles = [
 export function hookFile(platform: Platform): string | undefined {
   if (platform === "codex") return "hooks/codex-hooks.json";
   if (platform === "claude") return "hooks/hooks.json";
+  if (platform === "antigravity") return "hooks.json";
   return undefined;
 }
 
@@ -62,14 +79,17 @@ export async function packageVersion(directory = root): Promise<string> {
 export function pluginFiles(platform: Platform): string[] {
   if (platform === "muse")
     return [...commonFiles, ".muse-plugin/plugin.json", ...MUSE_HOOKS].sort();
+  if (platform === "antigravity")
+    return [
+      ...commonFiles,
+      ...ANTIGRAVITY_MANIFESTS,
+      ...ANTIGRAVITY_HOOKS,
+    ].sort();
   const hooks = hookFile(platform);
   return [
     ...commonFiles,
     `.${platform}-plugin/plugin.json`,
     ...(hooks === undefined ? [] : [hooks]),
-    platform === "codex"
-      ? ".agents/plugins/marketplace.json"
-      : ".claude-plugin/marketplace.json",
   ].sort();
 }
 
@@ -204,6 +224,25 @@ async function stageFiles(destination: string, files: string[]): Promise<void> {
   }
 }
 
+/**
+ * Fresh platform directories from the shared sources. Each unit holds
+ * exactly its harness's files, so a marketplace pull never exposes the
+ * other harnesses' configs; like the bundle, the units are committed and
+ * freshness-checked rather than hand-edited.
+ */
+export async function assemblePlatforms(): Promise<void> {
+  for (const platform of platforms) {
+    const unit = join(root, platformDir(platform));
+    await rm(unit, { recursive: true, force: true });
+    for (const file of pluginFiles(platform)) {
+      const target = join(unit, file);
+      await mkdir(dirname(target), { recursive: true });
+      await cp(join(root, file), target);
+      await chmod(target, file === LAUNCHER ? 0o755 : 0o644);
+    }
+  }
+}
+
 export async function buildRelease(
   outputDirectory = join(root, "artifacts"),
 ): Promise<void> {
@@ -214,6 +253,7 @@ export async function buildRelease(
     join(root, "runtime/THIRD-PARTY-NOTICES.txt"),
     await generateNotices(),
   );
+  await assemblePlatforms();
   await mkdir(outputDirectory, { recursive: true });
   const temporary = await mkdtemp(join(tmpdir(), `${PRODUCT}-release-`));
   try {

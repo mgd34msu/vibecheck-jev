@@ -4,19 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  ANTIGRAVITY_LINES,
+  ANTIGRAVITY_SESSION_ID,
   CLAUDE_LINES,
   CODEX_LINES,
   MUSE_LINES,
   MUSE_SESSION_DAY,
   MUSE_SESSION_ID,
+  writeAntigravityBrain,
   writeMuseSession,
   writeTranscript,
 } from "./jev-helpers.js";
 import {
   claudeLaunchBrief,
+  findAntigravityTranscript,
   findMuseSessionLog,
   isSealed,
   joinEvidence,
+  readAntigravityTranscript,
   readClaudeTranscript,
   readCodexTranscript,
   readMuseTranscript,
@@ -313,6 +318,106 @@ test("Muse session logs are found by session id in their day folder or beside th
     findMuseSessionLog(
       join(tmpdir(), "vibecheck-jev-no-such-store"),
       MUSE_SESSION_ID,
+    ),
+    undefined,
+  );
+});
+
+test("an Antigravity transcript yields the request, the reply and the evidence", (t) => {
+  const path = writeTranscript(t, ANTIGRAVITY_LINES);
+  const view = readAntigravityTranscript(path);
+  assert.deepEqual(view.userMessages, [
+    "Add a CSV export to the reports page.",
+  ]);
+  assert.equal(view.trigger, "user");
+  assert.equal(
+    view.lastReply,
+    "Running the report tests first.\nAll 12 report tests pass. The CSV export is in src/reports/csv.ts.",
+  );
+  assert.equal(
+    view.finalText,
+    "All 12 report tests pass. The CSV export is in src/reports/csv.ts.",
+  );
+  assert.ok(
+    view.evidence.some((segment) => segment.includes("Tests: 12 passed")),
+  );
+  assert.ok(
+    view.evidence.some((segment) =>
+      segment.startsWith("Command run (Run the report tests):\n$ npm test"),
+    ),
+  );
+  assert.ok(
+    view.evidence.some((segment) =>
+      segment.startsWith("Instruction sent by invoke_subagent: Write tests"),
+    ),
+  );
+  assert.ok(
+    view.evidence.every((segment) => !segment.includes("delegating coverage")),
+    "reasoning is never evidence",
+  );
+  assert.ok(!view.lastReply.includes("delegating coverage"));
+});
+
+test("a compact Antigravity transcript with encoded values reads the same", (t) => {
+  const path = writeTranscript(t, [
+    {
+      step_index: 1,
+      source: "MODEL",
+      type: "PLANNER_RESPONSE",
+      status: "DONE",
+      created_at: "2026-09-28T19:00:06Z",
+      tool_calls: [
+        {
+          name: "run_command",
+          args: { CommandLine: '"npm test"', toolSummary: '"tests"' },
+        },
+      ],
+    },
+    {
+      step_index: 2,
+      source: "MODEL",
+      type: "PLANNER_RESPONSE",
+      status: "DONE",
+      created_at: "2026-09-28T19:00:25Z",
+      tool_calls: [
+        {
+          name: "invoke_subagent",
+          args: {
+            Subagents: JSON.stringify([{ Prompt: "Write the tests." }]),
+          },
+        },
+      ],
+    },
+  ]);
+  const view = readAntigravityTranscript(path);
+  assert.ok(
+    view.evidence.some((segment) =>
+      segment.startsWith("Command run (tests):\n$ npm test"),
+    ),
+  );
+  assert.ok(
+    view.evidence.some((segment) =>
+      segment.startsWith(
+        "Instruction sent by invoke_subagent: Write the tests.",
+      ),
+    ),
+  );
+});
+
+test("Antigravity transcripts are found by conversation id in the brain store", (t) => {
+  const seeded = writeAntigravityBrain(t, ANTIGRAVITY_LINES);
+  assert.equal(
+    findAntigravityTranscript(seeded.brainDir, ANTIGRAVITY_SESSION_ID),
+    seeded.path,
+  );
+  assert.equal(
+    findAntigravityTranscript(seeded.brainDir, "019c-session"),
+    undefined,
+  );
+  assert.equal(
+    findAntigravityTranscript(
+      join(tmpdir(), "vibecheck-jev-no-such-brain"),
+      ANTIGRAVITY_SESSION_ID,
     ),
     undefined,
   );

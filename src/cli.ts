@@ -36,6 +36,7 @@ import { fixturesCommand, measureCommand } from "./jev/tools/measure.js";
 import { sourcesCommand } from "./jev/tools/sources.js";
 import type { Client } from "./jev/transcript.js";
 import {
+  antigravityBrainDir,
   defaultDatabase,
   expandHome,
   museSessionsDir,
@@ -160,7 +161,7 @@ Usage: vibecheck-jev [options]            run the MCP ledger server
   --help                             Print this help
 
 Commands:
-  hook pretool|bash-guard|stop|session-end --client claude|codex|muse   run a hook (reads stdin)
+  hook pretool|bash-guard|stop|session-end --client claude|codex|muse|antigravity   run a hook (reads stdin)
   measure fixtures [--runs N] [--source ID] [--battery ID]
   measure live [--project ID]
   measure replay [CHECK-ID] [--project ID] [--source ID]
@@ -217,8 +218,8 @@ export async function runHook(
   }
   if (name === "bash-guard")
     return config.hooks?.bashGuard === false
-      ? { exitCode: 0 }
-      : bashGuard(stdin);
+      ? allow(client, event)
+      : bashGuard(stdin, client);
   if (
     (name === "pretool" && config.hooks?.briefCheck === false) ||
     ((name === "stop" || name === "session-end") &&
@@ -228,6 +229,7 @@ export async function runHook(
   const deps: HookDeps = {
     client,
     databasePath: defaultDatabase(environment, config.data ?? {}),
+    antigravityBrain: antigravityBrainDir(environment),
     sessionsDir: museSessionsDir(environment),
     judgment: () => openJudgment(config, { environment, autostart: true }),
   };
@@ -271,14 +273,19 @@ export async function runHook(
 /**
  * Codex payloads carry `turn_id`; Claude Code's do not. Muse payloads carry
  * it too, so an explicit Muse flag wins and the payload only separates Codex
- * from Claude Code.
+ * from Claude Code. Antigravity payloads carry `toolCall` with a
+ * `conversationId`, which no other client sends.
  */
 export function detectClient(stdin: string, flag: Client): Client {
   if (flag === "muse") return "muse";
+  if (flag === "antigravity") return "antigravity";
   try {
     const value: unknown = JSON.parse(stdin);
-    if (typeof value === "object" && value !== null && "turn_id" in value)
-      return "codex";
+    if (typeof value === "object" && value !== null) {
+      if ("turn_id" in value) return "codex";
+      if ("toolCall" in value && "conversationId" in value)
+        return "antigravity";
+    }
   } catch {
     return flag;
   }
@@ -328,12 +335,14 @@ export async function runCommand(
         ? "codex"
         : values.client === "muse"
           ? "muse"
-          : values.client === "claude"
-            ? "claude"
-            : undefined;
+          : values.client === "antigravity"
+            ? "antigravity"
+            : values.client === "claude"
+              ? "claude"
+              : undefined;
     if (name === undefined || !HOOKS.has(name) || flag === undefined)
       throw new CliUsageError(
-        "usage: hook pretool|bash-guard|stop|session-end --client claude|codex|muse",
+        "usage: hook pretool|bash-guard|stop|session-end --client claude|codex|muse|antigravity",
       );
     const stdin = await readStdin();
     const client = detectClient(stdin, flag);

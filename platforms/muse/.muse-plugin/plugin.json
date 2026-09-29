@@ -1,0 +1,56 @@
+{
+  "capabilities": {
+    "commands": [],
+    "hooks": [
+      {
+        "command": ["bash", "hooks/muse-pretool.sh"],
+        "event": "PreToolUse",
+        "id": "pretool",
+        "statusMessage": "Checking the brief against the plan",
+        "timeoutMs": 45000
+      },
+      {
+        "command": ["bash", "hooks/muse-bash-guard.sh"],
+        "event": "PreToolUse",
+        "id": "bash-guard",
+        "timeoutMs": 10000
+      },
+      {
+        "command": ["bash", "hooks/muse-subagent-stop.sh"],
+        "event": "SubagentStop",
+        "id": "subagent-stop",
+        "statusMessage": "Checking the reply",
+        "timeoutMs": 45000
+      },
+      {
+        "command": ["bash", "hooks/muse-session-end.sh"],
+        "event": "SessionEnd",
+        "id": "session-end",
+        "timeoutMs": 45000
+      }
+    ],
+    "mcpServers": [
+      {
+        "command": ["bash", "scripts/vibecheck-jev.sh", "--transport", "stdio"],
+        "id": "vibecheck-jev",
+        "transport": "stdio"
+      }
+    ],
+    "reminders": [],
+    "skills": [
+      {
+        "id": "vibecheck-jev",
+        "path": "skills/vibecheck-jev/SKILL.md"
+      }
+    ]
+  },
+  "compat": {
+    "manifestDir": ".muse-plugin",
+    "source": "native"
+  },
+  "description": "A local MCP work ledger for coding agents whose reports are checked by a Jev-compatible judgment model.",
+  "displayName": "Vibecheck Jev",
+  "name": "vibecheck-jev",
+  "schemaVersion": 1,
+  "version": "1.0.0"
+}

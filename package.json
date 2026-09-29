@@ -44,11 +44,12 @@
     "format:check": "prettier --check .",
     "check:types": "bun scripts/check-types.ts",
     "check:bundle": "bun scripts/check-bundle.ts",
+    "check:platforms": "bun scripts/check-platforms.ts",
     "build:release": "bun scripts/build-release.ts",
     "verify:release": "bun scripts/verify-release.ts",
     "test:bun": "bun test tests",
     "test:node": "bun run build:test && node --test .test-build/tests/*.test.js",
-    "verify": "bun run format:check && bun run typecheck && bun run check:types && bun run check:bundle && bun run test:bun && bun run test:node && bun run build"
+    "verify": "bun run format:check && bun run typecheck && bun run check:types && bun run check:bundle && bun run check:platforms && bun run test:bun && bun run test:node && bun run build"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "2.0.0",

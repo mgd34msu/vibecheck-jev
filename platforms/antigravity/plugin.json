@@ -1,0 +1,11 @@
+{
+  "name": "vibecheck-jev",
+  "displayName": "Vibecheck Jev",
+  "description": "A local MCP work ledger for coding agents whose reports are checked by a Jev-compatible judgment model.",
+  "version": "1.0.0",
+  "suggestedPrompts": [
+    "Join this project's vibecheck-jev ledger and show what needs attention.",
+    "Record this task with its acceptance criteria in the ledger.",
+    "Mark my claim complete with a report and show whether it was verified."
+  ]
+}

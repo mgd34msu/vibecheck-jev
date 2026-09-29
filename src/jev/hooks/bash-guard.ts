@@ -4,11 +4,14 @@
 // (rm, rmdir, unlink or shred in command position with an unguarded $VAR or
 // ${VAR} expansion); it reads no prose and makes no judgment call.
 
+import type { Client } from "../transcript.js";
 import {
+  allow,
   deny,
   inputString,
   parsePayload,
   preToolPayloadSchema,
+  translateAntigravityPreTool,
   type HookResult,
 } from "./io.js";
 
@@ -36,13 +39,17 @@ export function unguardedDelete(command: string): string | undefined {
     .find((segment) => DELETE.test(segment) && hasUnguardedExpansion(segment));
 }
 
-export function bashGuard(stdin: string): HookResult {
-  const payload = parsePayload(preToolPayloadSchema, stdin);
-  if (typeof payload === "string") return { exitCode: 0 };
+export function bashGuard(stdin: string, client: Client): HookResult {
+  const payload =
+    client === "antigravity"
+      ? translateAntigravityPreTool(stdin)
+      : parsePayload(preToolPayloadSchema, stdin);
+  if (typeof payload === "string") return allow(client, "PreToolUse");
   const command = inputString(payload.tool_input, "command", "cmd") ?? "";
   const offending = unguardedDelete(command);
-  if (offending === undefined) return { exitCode: 0 };
+  if (offending === undefined) return allow(client, "PreToolUse");
   return deny(
+    client,
     `Refused a delete through a variable path (${offending.trim().slice(0, 160)}). Rewrite it with literal absolute paths, or guard each variable as "\${VAR:?}" so an empty value fails. Never delete through an unguarded variable.`,
   );
 }

@@ -1,6 +1,7 @@
 // PreToolUse hook for agent briefs: Claude Code's Agent, Task and
 // SendMessage, Codex's spawn_agent, send_message, followup_task and
-// send_input, and Muse's subagent_spawn and subagent_send_message. It blocks
+// send_input, Muse's subagent_spawn and subagent_send_message, and
+// Antigravity's invoke_subagent, send_message and manage_task. It blocks
 // a brief that asks for less than the recorded standard or plans to leave
 // work for later (brief-scope), and a new worker's brief that leaves out the
 // project rules governing its work (brief-carries-rules).
@@ -27,6 +28,7 @@ import {
   preToolPayloadSchema,
   readHookTranscript,
   recordEntries,
+  translateAntigravityPreTool,
   type HookDeps,
   type HookResult,
 } from "./io.js";
@@ -36,6 +38,7 @@ const LAUNCH_TOOLS = new Set([
   "Task",
   "spawn_agent",
   "subagent_spawn",
+  "invoke_subagent",
 ]);
 const MESSAGE_TOOLS = new Set([
   "SendMessage",
@@ -43,13 +46,17 @@ const MESSAGE_TOOLS = new Set([
   "followup_task",
   "send_input",
   "subagent_send_message",
+  "manage_task",
 ]);
 
 export async function preToolHook(
   stdin: string,
   deps: HookDeps,
 ): Promise<HookResult> {
-  const payload = parsePayload(preToolPayloadSchema, stdin);
+  const payload =
+    deps.client === "antigravity"
+      ? translateAntigravityPreTool(stdin)
+      : parsePayload(preToolPayloadSchema, stdin);
   if (typeof payload === "string")
     return failOpen(deps.client, "PreToolUse", payload);
   const toolName =
@@ -210,6 +217,7 @@ export async function preToolHook(
   ];
   if (reasons.length > 0) {
     const result = deny(
+      deps.client,
       `vibecheck-jev flagged this ${payload.tool_name}: ${reasons.join(" | ")}`,
     );
     return notes.length === 0

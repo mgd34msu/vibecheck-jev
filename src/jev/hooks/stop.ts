@@ -44,6 +44,7 @@ import {
   readHookTranscript,
   recordEntries,
   stopPayloadSchema,
+  translateAntigravityStop,
   type HookDeps,
   type HookResult,
 } from "./io.js";
@@ -97,7 +98,10 @@ export async function stopHook(
   stdin: string,
   deps: HookDeps,
 ): Promise<HookResult> {
-  const payload = parsePayload(stopPayloadSchema, stdin);
+  const payload =
+    deps.client === "antigravity"
+      ? translateAntigravityStop(stdin)
+      : parsePayload(stopPayloadSchema, stdin);
   if (typeof payload === "string")
     return failOpen(deps.client, "Stop", payload);
   const view: TranscriptView | undefined = readHookTranscript(deps, payload);
@@ -136,7 +140,7 @@ export async function stopHook(
     transcriptRef:
       typeof payload.transcript_path === "string"
         ? payload.transcript_path
-        : deps.client === "muse"
+        : deps.client === "muse" || deps.client === "antigravity"
           ? sessionKey
           : "last_assistant_message",
   });
@@ -373,7 +377,10 @@ async function checkReply(
     ...(recordError === undefined ? [] : [recordError]),
   ];
   if (reasons.length > 0) {
-    const result = blockStop(`vibecheck-jev: ${reasons.join("; ")}.`);
+    const result = blockStop(
+      deps.client,
+      `vibecheck-jev: ${reasons.join("; ")}.`,
+    );
     return notes.length === 0
       ? result
       : { ...result, stderr: `vibecheck-jev: ${notes.join("; ")}\n` };

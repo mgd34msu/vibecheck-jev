@@ -16,10 +16,13 @@ import type { Judgment } from "../src/jev/judgment.js";
 import { ScriptedProvider, type Script } from "../src/jev/lib/index.js";
 import { queryEntries } from "../src/verification/store.js";
 import {
+  ANTIGRAVITY_LINES,
+  ANTIGRAVITY_SESSION_ID,
   CLAUDE_LINES,
   CODEX_LINES,
   MUSE_LINES,
   MUSE_SESSION_ID,
+  writeAntigravityBrain,
   writeMuseSession,
   writeTranscript,
 } from "./jev-helpers.js";
@@ -49,9 +52,10 @@ function museSessions(t: TestContext): string {
 
 function deps(
   t: TestContext,
-  client: "claude" | "codex" | "muse",
+  client: "claude" | "codex" | "muse" | "antigravity",
   script: Script | undefined,
   sessionsDir?: string,
+  antigravityBrain?: string,
 ) {
   const directory = mkdtempSync(join(tmpdir(), "vibecheck-jev-hooks-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -62,6 +66,9 @@ function deps(
     databasePath,
     ...(client === "muse"
       ? { sessionsDir: sessionsDir ?? museSessions(t) }
+      : {}),
+    ...(client === "antigravity" && antigravityBrain !== undefined
+      ? { antigravityBrain }
       : {}),
     judgment: () =>
       opened?.judgment ?? {
@@ -146,6 +153,11 @@ const museCommon = {
   transcript_path: null,
 };
 
+const antigravityCommon = {
+  conversationId: ANTIGRAVITY_SESSION_ID,
+  workspacePaths: ["/nonexistent/work"],
+};
+
 test("the delete guard refuses deletes through unguarded variables and nothing else", () => {
   const refused = [
     "rm -rf $TARGET",
@@ -177,12 +189,13 @@ test("the delete guard refuses deletes through unguarded variables and nothing e
       tool_input: { command: "rm -rf $X" },
       transcript_path: null,
     }),
+    "codex",
   );
   assert.match(denied.stdout ?? "", /"permissionDecision":"deny"/u);
-  assert.equal(bashGuard("not json").exitCode, 0);
+  assert.equal(bashGuard("not json", "claude").exitCode, 0);
 });
 
-test("the client is read from the payload: Codex payloads carry turn_id", () => {
+test("the client is read from the payload: turn_id and toolCall shapes", () => {
   assert.equal(
     detectClient(JSON.stringify({ turn_id: "t" }), "claude"),
     "codex",
@@ -194,6 +207,17 @@ test("the client is read from the payload: Codex payloads carry turn_id", () => 
   assert.equal(detectClient("not json", "codex"), "codex");
   assert.equal(detectClient(JSON.stringify({ turn_id: "t" }), "muse"), "muse");
   assert.equal(detectClient("not json", "muse"), "muse");
+  assert.equal(detectClient("{}", "antigravity"), "antigravity");
+  assert.equal(
+    detectClient(
+      JSON.stringify({
+        toolCall: { name: "run_command" },
+        conversationId: "c",
+      }),
+      "claude",
+    ),
+    "antigravity",
+  );
 });
 
 test("a Claude brief that narrows the plan is denied and the verdict lands in the ledger", async (t) => {
@@ -581,6 +605,7 @@ test("a Muse shell delete through an unguarded variable is refused", () => {
         workdir: "/tmp",
       },
     }),
+    "muse",
   );
   assert.match(denied.stdout ?? "", /"permissionDecision":"deny"/u);
   const allowed = bashGuard(
@@ -591,6 +616,7 @@ test("a Muse shell delete through an unguarded variable is refused", () => {
       tool_use_id: "call_4",
       tool_input: { path: "/tmp/x" },
     }),
+    "muse",
   );
   assert.deepEqual(allowed, { exitCode: 0 });
 });
@@ -666,5 +692,161 @@ test("a Muse session end records the verdict without holding the reply", async (
         entry.kind === "verdict" &&
         entry.body.battery_id === "vibecheck.claim-grounded",
     ),
+  );
+});
+
+test("an Antigravity shell delete through an unguarded variable is refused with a flat decision", () => {
+  const denied = bashGuard(
+    JSON.stringify({
+      ...antigravityCommon,
+      stepIdx: 1,
+      toolCall: {
+        name: "run_command",
+        args: { CommandLine: "rm -rf $X" },
+      },
+    }),
+    "antigravity",
+  );
+  const output = z
+    .object({ decision: z.literal("deny"), reason: z.string() })
+    .parse(JSON.parse(denied.stdout ?? ""));
+  assert.match(output.reason, /unguarded variable/u);
+  const allowed = bashGuard(
+    JSON.stringify({
+      ...antigravityCommon,
+      stepIdx: 2,
+      toolCall: {
+        name: "run_command",
+        args: { CommandLine: 'rm -rf "${X:?}"' },
+      },
+    }),
+    "antigravity",
+  );
+  assert.deepEqual(allowed, {
+    stdout: JSON.stringify({ decision: "allow" }),
+    exitCode: 0,
+  });
+});
+
+test("an Antigravity spawn brief that narrows the plan is denied", async (t) => {
+  const setup = deps(t, "antigravity", (battery, question, state) =>
+    battery === "vibecheck.brief-scope" &&
+    question === "lowersBar" &&
+    has(state, "half")
+      ? 0.9
+      : 0.1,
+  );
+  await seedLedger(setup.databasePath, ANTIGRAVITY_SESSION_ID);
+  const result = await preToolHook(
+    JSON.stringify({
+      ...antigravityCommon,
+      stepIdx: 3,
+      toolCall: {
+        name: "invoke_subagent",
+        args: {
+          Subagents: [
+            {
+              Prompt: "Build the CSV export, but only half of the columns.",
+            },
+          ],
+        },
+      },
+    }),
+    setup.deps,
+  );
+  assert.equal(result.exitCode, 0);
+  const output = z
+    .object({ decision: z.literal("deny"), reason: z.string() })
+    .parse(JSON.parse(result.stdout ?? ""));
+  assert.match(output.reason, /brief-scope/u);
+});
+
+test("an Antigravity worker message is judged against the brain transcript's requests", async (t) => {
+  const seeded = writeAntigravityBrain(t, ANTIGRAVITY_LINES);
+  const setup = deps(t, "antigravity", () => 0.1, undefined, seeded.brainDir);
+  const result = await preToolHook(
+    JSON.stringify({
+      ...antigravityCommon,
+      stepIdx: 4,
+      toolCall: {
+        name: "send_message",
+        args: {
+          Message: "Fix the failing checkout test and run the suite.",
+          Recipient: "parent",
+        },
+      },
+    }),
+    setup.deps,
+  );
+  assert.deepEqual(result, {
+    stdout: JSON.stringify({ decision: "allow" }),
+    exitCode: 0,
+  });
+  const brief = setup.provider?.requests.find(
+    (entry) => entry.batteryId === "vibecheck.brief-scope",
+  );
+  assert.ok(
+    brief !== undefined &&
+      has(brief.state, "Add a CSV export to the reports page."),
+    "the brain transcript's requests stand in without a ledger project",
+  );
+});
+
+test("an Antigravity manage_task that is not worker input is allowed without judgment", async (t) => {
+  const setup = deps(t, "antigravity", () => 0.1);
+  const result = await preToolHook(
+    JSON.stringify({
+      ...antigravityCommon,
+      stepIdx: 5,
+      toolCall: {
+        name: "manage_task",
+        args: { Action: "create", TaskId: "task-1" },
+      },
+    }),
+    setup.deps,
+  );
+  assert.deepEqual(result, {
+    stdout: JSON.stringify({ decision: "allow" }),
+    exitCode: 0,
+  });
+  assert.equal(setup.provider?.requests.length ?? 0, 0);
+});
+
+test("an Antigravity stopping reply is judged against the session's open claims", async (t) => {
+  const setup = deps(t, "antigravity", (battery, question) =>
+    battery === "vibecheck.claims-done" &&
+    (question === "isFinal" || question === "overclaims")
+      ? 0.9
+      : 0.1,
+  );
+  await seedLedger(setup.databasePath, ANTIGRAVITY_SESSION_ID);
+  const transcript = writeTranscript(t, ANTIGRAVITY_LINES);
+  const result = await stopHook(
+    JSON.stringify({
+      ...antigravityCommon,
+      transcriptPath: transcript,
+      executionNum: 1,
+      terminationReason: "NO_TOOL_CALL",
+      fullyIdle: true,
+    }),
+    setup.deps,
+  );
+  const output = z
+    .object({ decision: z.literal("continue"), reason: z.string() })
+    .parse(JSON.parse(result.stdout ?? ""));
+  assert.match(output.reason, /claimed task as done/u);
+  const claims = setup.provider?.requests.find(
+    (entry) => entry.batteryId === "vibecheck.claims-done",
+  );
+  assert.ok(
+    claims !== undefined &&
+      has(claims.state, "every visible column is exported"),
+  );
+  const grounded = setup.provider?.requests.find(
+    (entry) => entry.batteryId === "vibecheck.claim-grounded",
+  );
+  assert.ok(
+    grounded !== undefined &&
+      has(grounded.state, "PASS tests/reports/csv.test.ts"),
   );
 });

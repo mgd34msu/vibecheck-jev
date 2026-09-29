@@ -22,6 +22,8 @@ import { z } from "zod";
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import {
+  ANTIGRAVITY_HOOKS,
+  ANTIGRAVITY_MANIFESTS,
   artifactNames,
   BUNDLE,
   commonFiles,
@@ -31,6 +33,7 @@ import {
   LAUNCHER,
   MUSE_HOOKS,
   packageVersion,
+  platformDir,
   platforms,
   pluginFiles,
   PRODUCT,
@@ -125,6 +128,94 @@ async function json(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
+const antigravityManifestSchema = z.object({
+  name: z.literal(PRODUCT),
+  displayName: z.string(),
+  description: z.string(),
+  version: z.string(),
+  suggestedPrompts: z.array(z.string()),
+});
+const antigravityMcpSchema = z.object({
+  mcpServers: z.object({
+    "vibecheck-jev": z.object({
+      command: z.literal("bash"),
+      args: z.tuple([
+        z.literal(LAUNCHER),
+        z.literal("--transport"),
+        z.literal("stdio"),
+      ]),
+    }),
+  }),
+});
+const antigravityHandlerSchema = z.object({
+  type: z.literal("command"),
+  command: z.string(),
+  timeout: z.number().int().positive(),
+});
+const antigravityHooksSchema = z.object({
+  "vibecheck-jev": z.object({
+    PreToolUse: z.tuple([
+      z.object({
+        matcher: z.literal("invoke_subagent|send_message|manage_task"),
+        hooks: z.tuple([antigravityHandlerSchema]),
+      }),
+      z.object({
+        matcher: z.literal("run_command"),
+        hooks: z.tuple([antigravityHandlerSchema]),
+      }),
+    ]),
+    Stop: z.tuple([antigravityHandlerSchema]),
+  }),
+});
+
+async function verifyAntigravityManifest(
+  directory: string,
+  version: string,
+): Promise<void> {
+  const manifest = antigravityManifestSchema.parse(
+    await json(join(directory, "plugin.json")),
+  );
+  assert.equal(manifest.version, version);
+  antigravityMcpSchema.parse(await json(join(directory, "mcp_config.json")));
+  const hooks = antigravityHooksSchema.parse(
+    await json(join(directory, "hooks.json")),
+  );
+  assert.deepEqual(
+    [
+      hooks["vibecheck-jev"].PreToolUse[0].hooks[0].command,
+      hooks["vibecheck-jev"].PreToolUse[1].hooks[0].command,
+      hooks["vibecheck-jev"].Stop[0].command,
+    ],
+    [
+      "bash hooks/antigravity-pretool.sh",
+      "bash hooks/antigravity-bash-guard.sh",
+      "bash hooks/antigravity-stop.sh",
+    ],
+  );
+  assert.deepEqual([...ANTIGRAVITY_MANIFESTS].sort(), [
+    "hooks.json",
+    "mcp_config.json",
+    "plugin.json",
+  ]);
+  assert.deepEqual([...ANTIGRAVITY_HOOKS].sort(), [
+    "hooks/antigravity-bash-guard.sh",
+    "hooks/antigravity-pretool.sh",
+    "hooks/antigravity-stop.sh",
+  ]);
+  const wrappers: [string, string][] = [
+    ["hooks/antigravity-pretool.sh", "pretool"],
+    ["hooks/antigravity-bash-guard.sh", "bash-guard"],
+    ["hooks/antigravity-stop.sh", "stop"],
+  ];
+  for (const [wrapper, hook] of wrappers) {
+    const script = await readFile(join(directory, wrapper), "utf8");
+    assert.ok(
+      script.includes(`/${LAUNCHER}" hook ${hook} --client antigravity`),
+      `${wrapper} runs ${hook} through the launcher`,
+    );
+  }
+}
+
 async function verifyMuseManifest(
   directory: string,
   version: string,
@@ -169,6 +260,10 @@ async function verifyMuseManifest(
       `${wrapper} runs ${hook} through the launcher`,
     );
   }
+  assert.ok(
+    !(await readdir(directory)).includes("marketplace.json"),
+    "a root marketplace.json hijacks Muse probe #1; Muse must derive via the codex catalog",
+  );
 }
 
 export async function verifyVersions(directory: string): Promise<string> {
@@ -176,6 +271,10 @@ export async function verifyVersions(directory: string): Promise<string> {
   for (const platform of platforms) {
     if (platform === "muse") {
       await verifyMuseManifest(directory, version);
+      continue;
+    }
+    if (platform === "antigravity") {
+      await verifyAntigravityManifest(directory, version);
       continue;
     }
     const manifest = manifestSchema.parse(
@@ -201,7 +300,12 @@ export async function verifyVersions(directory: string): Promise<string> {
       );
     assert.deepEqual(
       catalog.plugins[0]?.source,
-      platform === "codex" ? { source: "local", path: "./" } : "./",
+      // Codex stays whole-tree: Muse derives installs via this catalog and
+      // cannot follow it into a subdir (its native catalog digests are
+      // unverifiable by hand). Claude takes the isolated unit.
+      platform === "codex"
+        ? { source: "local", path: "./" }
+        : "./platforms/claude",
     );
     assert.deepEqual(manifest.mcpServers["vibecheck-jev"].args, [
       platform === "codex" ? LAUNCHER : `\${CLAUDE_PLUGIN_ROOT}/${LAUNCHER}`,
@@ -260,6 +364,15 @@ export async function exercisePlugin(
     command = entry;
     arguments_ = [resolve(directory, script), ...flags];
     cwd = workingDirectory;
+  } else if (platform === "antigravity") {
+    const config = antigravityMcpSchema.parse(
+      await json(join(directory, "mcp_config.json")),
+    );
+    const server = config.mcpServers["vibecheck-jev"];
+    const [script, ...flags] = server.args;
+    command = server.command;
+    arguments_ = [resolve(directory, script), ...flags];
+    cwd = directory;
   } else {
     const manifest = manifestSchema.parse(
       await json(join(directory, `.${platform}-plugin/plugin.json`)),
@@ -457,6 +570,43 @@ export function exerciseHooks(
         timeout: 30_000,
       },
     );
+  if (platform === "antigravity") {
+    const conversation = {
+      conversationId: "release-hook-session",
+      workspacePaths: [tmpdir()],
+    };
+    const guarded = hook("bash-guard", {
+      ...conversation,
+      stepIdx: 1,
+      toolCall: {
+        name: "run_command",
+        args: { CommandLine: 'rm -rf "$TARGET/build"' },
+      },
+    });
+    assert.equal(guarded.status, 0, guarded.stderr);
+    assert.match(guarded.stdout, /"decision":"deny"/u);
+    const allowed = hook("bash-guard", {
+      ...conversation,
+      stepIdx: 2,
+      toolCall: {
+        name: "run_command",
+        args: { CommandLine: 'rm -rf "${TARGET:?}/build"' },
+      },
+    });
+    assert.equal(allowed.status, 0, allowed.stderr);
+    assert.match(allowed.stdout, /"decision":"allow"/u);
+    const stop = hook("stop", {
+      ...conversation,
+      executionNum: 1,
+      terminationReason: "NO_TOOL_CALL",
+      fullyIdle: true,
+    });
+    assert.equal(stop.status, 0, stop.stderr);
+    assert.doesNotMatch(stop.stdout, /"decision":"continue"/u);
+    rmSync(environment.XDG_CONFIG_HOME, { recursive: true, force: true });
+    rmSync(environment.XDG_DATA_HOME, { recursive: true, force: true });
+    return;
+  }
   const guarded = hook("bash-guard", {
     ...common,
     hook_event_name: "PreToolUse",
@@ -557,14 +707,18 @@ async function makeWritable(directory: string): Promise<void> {
   }
 }
 
-async function compareFiles(directory: string, files: string[]): Promise<void> {
+async function compareFiles(
+  directory: string,
+  files: string[],
+  context = "Archive bytes differ",
+): Promise<void> {
   for (const file of files) {
     const target = join(directory, file);
     assert.ok((await lstat(target)).isFile(), `${file} is not a regular file`);
     assert.deepEqual(
       await readFile(target),
       await readFile(join(root, file)),
-      `Archive bytes differ: ${file}`,
+      `${context}: ${file}`,
     );
   }
 }
@@ -574,6 +728,9 @@ export async function verifyNativeInstall(
   platform: Platform,
   temporary: string,
 ): Promise<void> {
+  // No Antigravity harness runs in the sandbox; the install is verified by
+  // hand against the agy CLI instead.
+  if (platform === "antigravity") return;
   const sandbox = join(temporary, `${platform}-native`);
   await mkdir(sandbox, { recursive: true });
   const arguments_ = [
@@ -806,6 +963,11 @@ export async function verifyRelease(
       run("unzip", ["-q", archive, "-d", extracted]);
       const plugin = join(extracted, PRODUCT);
       await compareFiles(plugin, files);
+      await compareFiles(
+        join(root, platformDir(platform)),
+        files,
+        "Platform bytes differ",
+      );
       await makeReadOnly(plugin);
       readOnly.push(plugin);
       for (const runtime of runtimes) {

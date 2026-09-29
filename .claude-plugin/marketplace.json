@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "vibecheck-jev",
-      "source": "./",
+      "source": "./platforms/claude",
       "description": "A work ledger for coding agents whose reports are checked by a Jev-compatible judgment model.",
       "author": {
         "name": "Mike Davis",

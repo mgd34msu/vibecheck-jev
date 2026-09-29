@@ -332,3 +332,99 @@ export const MUSE_LINES = [
     text: "All 12 report tests pass. The CSV export is in src/reports/csv.ts.",
   }),
 ];
+
+export const ANTIGRAVITY_SESSION_ID = "a0b6cd76-2250-49cb-a547-56977897dbd4";
+
+/** An Antigravity brain store holding one conversation, laid out the way the CLI shards it. */
+export function writeAntigravityBrain(
+  t: TestContext,
+  lines: readonly unknown[],
+  sessionId: string = ANTIGRAVITY_SESSION_ID,
+): { brainDir: string; path: string } {
+  const brainDir = mkdtempSync(join(tmpdir(), "vibecheck-jev-brain-"));
+  t.after(() => rmSync(brainDir, { recursive: true, force: true }));
+  const directory = join(brainDir, sessionId, ".system_generated", "logs");
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, "transcript_full.jsonl");
+  writeFileSync(
+    path,
+    `${lines.map((line) => JSON.stringify(line)).join("\n")}\n{"partial`,
+  );
+  return { brainDir, path };
+}
+
+export const ANTIGRAVITY_LINES = [
+  {
+    step_index: 1,
+    source: "USER_EXPLICIT",
+    type: "USER_INPUT",
+    status: "DONE",
+    created_at: "2026-09-28T19:00:00Z",
+    content:
+      "<USER_REQUEST>\nAdd a CSV export to the reports page.\n</USER_REQUEST>",
+  },
+  {
+    step_index: 2,
+    source: "MODEL",
+    type: "PLANNER_RESPONSE",
+    status: "DONE",
+    created_at: "2026-09-28T19:00:05Z",
+    content: "Running the report tests first.",
+  },
+  {
+    step_index: 3,
+    source: "MODEL",
+    type: "PLANNER_RESPONSE",
+    status: "DONE",
+    created_at: "2026-09-28T19:00:06Z",
+    tool_calls: [
+      {
+        name: "run_command",
+        args: {
+          CommandLine: "npm test tests/reports",
+          toolSummary: "Run the report tests",
+        },
+      },
+    ],
+  },
+  {
+    step_index: 4,
+    source: "MODEL",
+    type: "GENERIC",
+    status: "DONE",
+    created_at: "2026-09-28T19:00:20Z",
+    content:
+      "The command exited with code 0. Output: PASS tests/reports/csv.test.ts\nTests: 12 passed",
+  },
+  {
+    step_index: 5,
+    source: "MODEL",
+    type: "PLANNER_RESPONSE",
+    status: "DONE",
+    created_at: "2026-09-28T19:00:25Z",
+    thinking: "Tests pass; delegating coverage.",
+    tool_calls: [
+      {
+        name: "invoke_subagent",
+        args: {
+          Subagents: [
+            {
+              Model: "flash",
+              Prompt:
+                "Write tests for src/reports/csv.ts until every function has one.",
+            },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    step_index: 6,
+    source: "MODEL",
+    type: "PLANNER_RESPONSE",
+    status: "DONE",
+    created_at: "2026-09-28T19:00:40Z",
+    content:
+      "All 12 report tests pass. The CSV export is in src/reports/csv.ts.",
+  },
+];

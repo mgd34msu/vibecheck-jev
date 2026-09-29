@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vibecheck-jev": {
+      "command": "bash",
+      "args": ["scripts/vibecheck-jev.sh", "--transport", "stdio"]
+    }
+  }
+}

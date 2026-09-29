@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "vibecheck-jev": {
+      "command": "bash",
+      "args": [
+        "/absolute/path/to/vibecheck-jev/scripts/vibecheck-jev.sh",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "VIBECHECK_JEV_DB": "/absolute/path/to/shared-data/ledger.sqlite3"
+      }
+    }
+  }
+}

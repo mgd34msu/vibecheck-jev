@@ -1,0 +1,37 @@
+{
+  "name": "vibecheck-jev",
+  "version": "1.0.0",
+  "description": "A local MCP work ledger for coding agents whose reports are checked by a Jev-compatible judgment model.",
+  "author": {
+    "name": "Mike Davis",
+    "email": "mgd34msu@gmail.com",
+    "url": "https://github.com/mgd34msu"
+  },
+  "homepage": "https://github.com/mgd34msu/vibecheck-jev#readme",
+  "repository": "https://github.com/mgd34msu/vibecheck-jev",
+  "license": "MIT",
+  "keywords": ["mcp", "ledger", "coding-agents", "verification", "jev"],
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
+  "mcpServers": {
+    "vibecheck-jev": {
+      "command": "bash",
+      "args": ["scripts/vibecheck-jev.sh", "--transport", "stdio"],
+      "cwd": "."
+    }
+  },
+  "interface": {
+    "displayName": "Vibecheck Jev",
+    "shortDescription": "A checked work ledger for coding agents",
+    "longDescription": "Record tasks, acceptance criteria, claims and handoffs in a local SQLite ledger. A Jev-compatible judgment model checks done reports, briefs, blockers and replies against the recorded plan, and status shows each task as reported and as verified.",
+    "developerName": "Mike Davis",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/mgd34msu/vibecheck-jev",
+    "defaultPrompt": [
+      "Join this project's vibecheck-jev ledger and show what needs attention.",
+      "Record this task with its acceptance criteria in the ledger.",
+      "Mark my claim complete with a report and show whether it was verified."
+    ]
+  }
+}
